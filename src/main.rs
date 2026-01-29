@@ -10,7 +10,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 
-use crate::ollama::post_ollama_chat;
+use crate::ollama::{post_ollama_chat, OllamaChatResponseStreamingState};
 use crate::ollama::{OllamaChatMessage, OllamaChatResponse, ToolCall};
 
 pub mod ollama;
@@ -43,6 +43,7 @@ pub struct ApplicationConfig {
     url: String,
     model: String,
     stream: bool,
+    output_limit: OutputLimit,
     models: HashMap<String, ModelConfig>,
 }
 
@@ -52,6 +53,29 @@ pub struct ModelConfig {
     think: bool,
     tools: bool,
     num_ctx: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct OutputLimit {
+    max_size: usize,
+    method: TrimMethod,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum TrimMethod {
+    Head,
+    Tail,
+    Bytes,
+}
+
+impl Default for OutputLimit {
+    fn default() -> Self {
+        Self {
+            max_size: 2048,
+            method: TrimMethod::Head,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -136,31 +160,47 @@ impl ApplicationState {
             self.messages.push(new_message);
             if let Some(thinking) = message.thinking {
                 if !thinking.is_empty() {
-                    println!("{}", thinking);
+                    println!("Assistant Thought:\n\x1b[90m{}\x1b[0m", thinking);
                 }
             }
             if !message.content.is_empty() {
-                println!("{}", message.content);
+                println!("Assistant:\n{}", message.content);
+            }
+            if message.tool_calls.is_some() {
+                println!("Assistant Requests Tool Call(s)");
             }
         }
     }
 
-    pub fn process_assistant_message_chunk(&mut self, resp: OllamaChatResponse) {
+    pub fn process_assistant_message_chunk(
+        &mut self,
+        prev_state: OllamaChatResponseStreamingState,
+        resp: OllamaChatResponse,
+    ) -> OllamaChatResponseStreamingState {
+        let mut streaming_state = OllamaChatResponseStreamingState::Recieving;
         if let Some(message) = resp.message {
             if let Some(thinking) = message.thinking {
                 //If it's a thought chunk, just send it to console
                 if !thinking.is_empty() {
-                    print!("{}", thinking);
+                    if let OllamaChatResponseStreamingState::Recieving = prev_state {
+                        println!("Assistant Thinking...")
+                    }
+                    print!("\x1b[90m{}\x1b[0m", thinking);
                     io::stdout().flush().unwrap_or_default();
+                    streaming_state = OllamaChatResponseStreamingState::Thinking;
                 }
             }
             //Regular messages get saved into the last message
             if !message.content.is_empty() {
+                if let OllamaChatResponseStreamingState::Thinking = prev_state {
+                    println!("\nAssistant:")
+                }
                 if let Some(last_message) = self.messages.last_mut() {
                     last_message.content += &message.content;
                 }
                 print!("{}", message.content);
                 io::stdout().flush().unwrap_or_default();
+                streaming_state = OllamaChatResponseStreamingState::Responding;
             }
             //Tool calls will come through here as well
             if let Some(tool_calls) = message.tool_calls {
@@ -171,9 +211,13 @@ impl ApplicationState {
                         last_message.tool_calls = Some(tool_calls);
                     }
                 }
-                println!();
+                if let OllamaChatResponseStreamingState::Responding = prev_state {
+                    println!("Tool Call...")
+                }
+                streaming_state = OllamaChatResponseStreamingState::CallingTools;
             }
         }
+        streaming_state
     }
 
     pub fn finalize_assistant_message(&mut self, resp: &OllamaChatResponse) {
@@ -222,20 +266,82 @@ fn create_shell_tool() -> serde_json::Value {
     })
 }
 
-fn execute_command(command: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn execute_command(command: &str, output_limit: &OutputLimit) -> String {
     println!("EXECUTING {}", command);
-    let output = Command::new("sh").arg("-c").arg(command).output()?;
+    let output = match Command::new("sh").arg("-c").arg(command).output() {
+        Ok(output) => output,
+        Err(e) => {
+            let error_msg = format!("Failed to execute command: {}", e);
+            println!("EXECUTION ERROR: {}", error_msg);
+            return error_msg;
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    if !output.status.success() {
-        println!("COMMAND FAILED\n{}", stderr);
-        return Err(format!("Command failed: {}", stderr).into());
-    }
+    let result = if !output.status.success() {
+        let error_msg = format!(
+            "Command failed with exit code {}: {}",
+            output.status.code().unwrap_or(-1),
+            stderr
+        );
+        println!("COMMAND FAILED\n{}", error_msg);
+        error_msg
+    } else {
+        let result = trim_output(&stdout, output_limit);
+        println!("OUTPUT:\n{}", result);
+        result
+    };
 
-    println!("OUTPUT:\n{}", stdout);
-    Ok(stdout.to_string())
+    result
+}
+
+fn trim_output(output: &str, limit: &OutputLimit) -> String {
+    match limit.method {
+        TrimMethod::Head => {
+            let lines: Vec<&str> = output.lines().collect();
+            let max_lines = limit.max_size / 80; // Rough estimate of chars per line
+            if lines.len() > max_lines {
+                let mut result = lines[..max_lines].join("\n");
+                result.push_str(&format!(
+                    "\n... [Output truncated: showing first {} lines of {}]",
+                    max_lines,
+                    lines.len()
+                ));
+                result
+            } else {
+                output.to_string()
+            }
+        }
+        TrimMethod::Tail => {
+            let lines: Vec<&str> = output.lines().collect();
+            let max_lines = limit.max_size / 80;
+            if lines.len() > max_lines {
+                let mut result = format!(
+                    "... [Output truncated: showing last {} lines of {}]\n",
+                    max_lines,
+                    lines.len()
+                );
+                result.push_str(&lines[lines.len() - max_lines..].join("\n"));
+                result
+            } else {
+                output.to_string()
+            }
+        }
+        TrimMethod::Bytes => {
+            if output.len() > limit.max_size {
+                let mut result = output[..limit.max_size].to_string();
+                result.push_str(&format!(
+                    "\n... [Output truncated at {} bytes]",
+                    limit.max_size
+                ));
+                result
+            } else {
+                output.to_string()
+            }
+        }
+    }
 }
 
 async fn chat_mode(
@@ -358,7 +464,7 @@ By following these instructions, you will be able to effectively manage the code
 
             app_state.add_user_message(&input);
         }
-        println!("\nSending Request");
+        println!("\nSending Request...");
 
         //Call Ollamas chat endpoint
         if let Err(e) = post_ollama_chat(&client, &app_config, &mut app_state).await {
@@ -393,20 +499,20 @@ By following these instructions, you will be able to effectively manage the code
                 Err(_) => "ERROR".to_string(),
             };
             if input == "y" || input == "Y" {
-                if let Ok(tool_result) = execute_command(
+                let tool_result = execute_command(
                     tc.function
                         .arguments
                         .get("command")
                         .unwrap()
                         .as_str()
                         .unwrap(),
-                ) {
-                    app_state.add_tool_result(
-                        tc.id.as_ref().unwrap(),
-                        tc.function.name.as_str(),
-                        tool_result.as_ref(),
-                    );
-                }
+                    &app_config.output_limit,
+                );
+                app_state.add_tool_result(
+                    tc.id.as_ref().unwrap(),
+                    tc.function.name.as_str(),
+                    &tool_result,
+                );
             } else {
                 app_state.add_tool_result(
                     tc.id.as_ref().unwrap(),
