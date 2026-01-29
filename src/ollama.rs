@@ -149,7 +149,8 @@ pub async fn post_ollama_chat(
 
     let mut stream = response.bytes_stream();
 
-    let mut streaming_state : OllamaChatResponseStreamingState = OllamaChatResponseStreamingState::Recieving;
+    let mut streaming_state: OllamaChatResponseStreamingState =
+        OllamaChatResponseStreamingState::Recieving;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
@@ -167,7 +168,8 @@ pub async fn post_ollama_chat(
                         return Ok(ollama_response);
                     }
                     //update app state with incoming message
-                    streaming_state = state.process_assistant_message_chunk(streaming_state, ollama_response);
+                    streaming_state =
+                        state.process_assistant_message_chunk(streaming_state, ollama_response);
                 }
                 Err(e) => {
                     return Err(format!("JSON Error: {}", e).into());
