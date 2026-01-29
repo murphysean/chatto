@@ -123,9 +123,21 @@ pub async fn post_ollama_chat(
             .unwrap_or_else(|_| "Unknown error".to_string());
         return Err(format!("API Error {}: {}", status, error_text).into());
     }
-    state.add_assistant_message("");
 
-    //TODO Determine if this is a streaming response, or a regular response
+    // Check content type
+    if response
+        .headers()
+        .get("Content-Type")
+        .map(|cthv| cthv.to_str().unwrap_or_default())
+        == Some("application/json")
+    {
+        let body: OllamaChatResponse = response.json().await?;
+        state.add_assistant_response(body.clone());
+        state.finalize_assistant_message(&body);
+        return Ok(body);
+    }
+
+    state.add_assistant_message("");
 
     let mut stream = response.bytes_stream();
 
@@ -142,7 +154,7 @@ pub async fn post_ollama_chat(
             match serde_json::from_str::<OllamaChatResponse>(line) {
                 Ok(ollama_response) => {
                     if ollama_response.done {
-                        state.finalize_assistant_message(ollama_response.clone());
+                        state.finalize_assistant_message(&ollama_response);
                         return Ok(ollama_response);
                     }
                     //update app state with incoming message

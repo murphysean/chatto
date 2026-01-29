@@ -95,13 +95,6 @@ impl ApplicationState {
         }
     }
 
-    fn model_supports_tools(&self, app_config: &ApplicationConfig) -> bool {
-        match app_config.models.get(self.model.as_str()) {
-            Some(model_config) => model_config.tools,
-            None => ModelConfig::default().tools,
-        }
-    }
-
     fn save_session(&self, session_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let filename = format!(".chatto-{}.yaml", session_name);
         let yaml_content = serde_yaml::to_string(&self)?;
@@ -129,6 +122,27 @@ impl ApplicationState {
             tool_call_id: None,
         };
         self.messages.push(message);
+    }
+
+    fn add_assistant_response(&mut self, resp: OllamaChatResponse) {
+        if let Some(message) = resp.message {
+            let new_message = OllamaChatMessage {
+                role: message.role,
+                content: message.content.clone(),
+                tool_calls: message.tool_calls.clone(),
+                tool_name: None,
+                tool_call_id: None,
+            };
+            self.messages.push(new_message);
+            if let Some(thinking) = message.thinking {
+                if !thinking.is_empty() {
+                    println!("{}", thinking);
+                }
+            }
+            if !message.content.is_empty() {
+                println!("{}", message.content);
+            }
+        }
     }
 
     pub fn process_assistant_message_chunk(&mut self, resp: OllamaChatResponse) {
@@ -162,7 +176,7 @@ impl ApplicationState {
         }
     }
 
-    pub fn finalize_assistant_message(&mut self, resp: OllamaChatResponse) {
+    pub fn finalize_assistant_message(&mut self, resp: &OllamaChatResponse) {
         //Assume this is the last of the streaming messages, it's marked done
         println!(
             "\nAssistant Finished... Prompt: {}, Eval: {}, Dur: {}",
@@ -297,7 +311,7 @@ By following these instructions, you will be able to effectively manage the code
     } else {
         DEFAULT_SYS_AGENT_PROMPT.to_string()
     };
-    if app_state.model_supports_tools(&app_config) {
+    if model_config.tools {
         sys_content += DEFAULT_SYS_TOOLS_PROMPT;
     }
 
