@@ -46,6 +46,18 @@ pub struct OllamaChatMessage {
     pub tool_call_id: Option<String>,
 }
 
+impl OllamaChatMessage {
+    fn get_token_count_estimate(&self) -> u64 {
+        let bytes = self.content.len();
+        let words = self.content.split_whitespace().count();
+
+        let tokens_bytes = (bytes as f64 / 4.0).floor() as u64;
+        let tokens_words = (words as f64 * 1.5).floor() as u64;
+
+        (tokens_bytes + tokens_words) / 2
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct OllamaChatResponseMessage {
     pub role: String,
@@ -130,7 +142,7 @@ pub async fn post_ollama_chat(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(format!("API Error {}: {}", status, error_text).into());
+        return Err(format!("API Error: Status: {}: {}", status, error_text).into());
     }
 
     // Check content type
@@ -153,7 +165,7 @@ pub async fn post_ollama_chat(
     let mut streaming_state: OllamaChatResponseStreamingState =
         OllamaChatResponseStreamingState::Recieving;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
+        let chunk = chunk.map_err(|e| format!("Stream chunk error: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
 
         for line in chunk_str.lines() {
@@ -171,6 +183,7 @@ pub async fn post_ollama_chat(
                         state.process_assistant_message_chunk(streaming_state, ollama_response);
                 }
                 Err(e) => {
+                    println!("{line}");
                     return Err(format!("JSON Error: {}", e).into());
                 }
             }

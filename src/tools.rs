@@ -137,3 +137,243 @@ fn trim_output(output: &str, limit: &OutputLimit) -> String {
         }
     }
 }
+
+pub fn create_read_file_tool() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read lines from a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to read"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Starting line number (1-based, optional)"
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Ending line number (1-based, optional)"
+                    }
+                },
+                "required": ["path"]
+            }
+        }
+    })
+}
+
+pub fn create_write_file_tool() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write content to a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to write"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to write to the file"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["overwrite", "append", "insert", "replace"],
+                        "description": "Write mode: overwrite (default), append, insert at line, or replace line range"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Starting line number for insert/replace operations (1-based)"
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "End line number for replace operations (1-based)"
+                    }
+                },
+                "required": ["path", "content"]
+            }
+        }
+    })
+}
+
+pub fn read_file_lines(path: &str, start_line: Option<usize>, end_line: Option<usize>) -> String {
+    use std::fs;
+
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) => return format!("Error reading file: {}", e),
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let start = start_line.unwrap_or(1).saturating_sub(1); // Convert 1-based to 0-based
+    let end = end_line.unwrap_or(lines.len()).min(lines.len()); // end_line is 1-based, but slicing is exclusive, so we use it directly
+
+    if start >= lines.len() {
+        return "Start line exceeds file length".to_string();
+    }
+
+    if start >= end {
+        return "Start line must be less than or equal to end line".to_string();
+    }
+
+    let mut result = String::new();
+    for (i, line) in lines[start..end].iter().enumerate() {
+        let line_num = start + i + 1;
+        result.push_str(&format!("{:4}: {}\n", line_num, line));
+    }
+
+    if result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
+pub fn show_write_diff(
+    path: &str,
+    content: &str,
+    mode: Option<&str>,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) {
+    use std::fs;
+
+    let existing = fs::read_to_string(path).unwrap_or_default();
+    let existing_lines: Vec<&str> = existing.lines().collect();
+
+    match mode.unwrap_or("overwrite") {
+        "overwrite" => {
+            let new_lines: Vec<&str> = content.lines().collect();
+            for (i, line) in existing_lines.iter().enumerate() {
+                println!("\x1b[41m- {:3}     : {}\x1b[0m", i + 1, line);
+            }
+            for (i, line) in new_lines.iter().enumerate() {
+                println!("\x1b[42m+ {:3}     : {}\x1b[0m", i + 1, line);
+            }
+        }
+        "append" => {
+            let start_line_num = existing_lines.len() + 1;
+            for line in content.lines() {
+                println!("\x1b[42m+ {:3}     : {}\x1b[0m", start_line_num, line);
+            }
+        }
+        "insert" => {
+            let insert_at = start_line.unwrap_or(1);
+            for line in content.lines() {
+                println!("\x1b[42m+ {:3}     : {}\x1b[0m", insert_at, line);
+            }
+        }
+        "replace" => {
+            let start = start_line.unwrap_or(1);
+            let end = end_line.unwrap_or(start);
+            let start_idx = start.saturating_sub(1);
+            let end_idx = end.min(existing_lines.len());
+
+            // Show context before
+            let context_start = start_idx.saturating_sub(3);
+            for i in context_start..start_idx {
+                if i < existing_lines.len() {
+                    println!("  {:3}     : {}", i + 1, existing_lines[i]);
+                }
+            }
+
+            // Show removed lines
+            for i in start_idx..end_idx {
+                if i < existing_lines.len() {
+                    println!("\x1b[41m- {:3}     : {}\x1b[0m", i + 1, existing_lines[i]);
+                }
+            }
+
+            // Show added lines
+            for (i, line) in content.lines().enumerate() {
+                println!("\x1b[42m+ {:3}     : {}\x1b[0m", start + i, line);
+            }
+
+            // Show context after
+            let context_end = (end_idx + 3).min(existing_lines.len());
+            for (i, line) in existing_lines
+                .iter()
+                .enumerate()
+                .take(context_end)
+                .skip(end_idx)
+            {
+                println!("  {:3}     : {}", i + 1, line);
+            }
+        }
+        _ => {}
+    }
+
+    println!();
+    println!(" ⋮ ");
+}
+
+pub fn write_file_content(
+    path: &str,
+    content: &str,
+    mode: Option<&str>,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> String {
+    use std::fs;
+
+    match mode.unwrap_or("overwrite") {
+        "overwrite" => match fs::write(path, content) {
+            Ok(_) => "File written successfully".to_string(),
+            Err(e) => format!("Error writing file: {}", e),
+        },
+        "append" => match fs::OpenOptions::new().create(true).append(true).open(path) {
+            Ok(mut file) => {
+                use std::io::Write;
+                match writeln!(file, "{}", content) {
+                    Ok(_) => "Content appended successfully".to_string(),
+                    Err(e) => format!("Error appending to file: {}", e),
+                }
+            }
+            Err(e) => format!("Error opening file for append: {}", e),
+        },
+        "insert" => {
+            let existing = fs::read_to_string(path).unwrap_or_default();
+            let mut lines: Vec<&str> = existing.lines().collect();
+            let insert_at = start_line.unwrap_or(1).saturating_sub(1);
+
+            if insert_at <= lines.len() {
+                lines.insert(insert_at, content);
+                let new_content = lines.join("\n");
+                match fs::write(path, new_content) {
+                    Ok(_) => "Content inserted successfully".to_string(),
+                    Err(e) => format!("Error inserting content: {}", e),
+                }
+            } else {
+                "Insert line exceeds file length".to_string()
+            }
+        }
+        "replace" => {
+            let existing = match fs::read_to_string(path) {
+                Ok(content) => content,
+                Err(e) => return format!("Error reading file: {}", e),
+            };
+            let mut lines: Vec<&str> = existing.lines().collect();
+            let start = start_line.unwrap_or(1).saturating_sub(1);
+            let end = end_line.unwrap_or(start + 1).min(lines.len());
+
+            if start < lines.len() {
+                lines.splice(start..end, content.lines());
+                let new_content = lines.join("\n");
+                match fs::write(path, new_content) {
+                    Ok(_) => "Content replaced successfully".to_string(),
+                    Err(e) => format!("Error replacing content: {}", e),
+                }
+            } else {
+                "Replace line exceeds file length".to_string()
+            }
+        }
+        _ => "Invalid mode".to_string(),
+    }
+}
