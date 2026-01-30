@@ -35,6 +35,7 @@ impl From<ApplicationState> for OllamaChatRequest {
 pub struct OllamaChatMessage {
     pub role: String,
     pub content: String,
+    /// The agent fills this when it is requesting tool use
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     /// Used for role = tool
@@ -154,13 +155,11 @@ pub async fn post_ollama_chat(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
-        //println!("Processing chunk_str: {}", chunk_str);
 
         for line in chunk_str.lines() {
             if line.trim().is_empty() {
                 continue;
             }
-            //println!("\nLine: {}", chunk_str);
             match serde_json::from_str::<OllamaChatResponse>(line) {
                 Ok(ollama_response) => {
                     if ollama_response.done {

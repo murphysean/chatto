@@ -5,6 +5,7 @@ use rustyline::DefaultEditor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -220,6 +221,17 @@ impl ApplicationState {
     }
 }
 
+fn load_agent_context() -> Option<String> {
+    let current_dir = env::current_dir().ok()?;
+    let agent_file = current_dir.join("AGENT.md");
+
+    if agent_file.exists() {
+        fs::read_to_string(agent_file).ok()
+    } else {
+        None
+    }
+}
+
 async fn chat_mode(
     app_config: ApplicationConfig,
     session: Option<String>,
@@ -232,8 +244,6 @@ async fn chat_mode(
         ApplicationState::new_from_config(&app_config)
     };
     app_state.tools = vec![create_shell_tool()];
-
-    println!("Connecting to Ollama at {}...", app_config.url);
 
     static DEFAULT_SYS_TOOLS_PROMPT: &str = r#"You are an AI assistant with access to a shell prompt. Your primary tool is the shell prompt, which allows you to execute commands and interact with the file system. Here are some common commands and tools you might use:
 
@@ -293,6 +303,13 @@ By following these instructions, you will be able to effectively manage the code
     } else {
         DEFAULT_SYS_AGENT_PROMPT.to_string()
     };
+
+    // Add AGENT.md context if available
+    if let Some(agent_context) = load_agent_context() {
+        sys_content += "\n\n## Project Context\n";
+        sys_content += &agent_context;
+    }
+
     if model_config.tools {
         sys_content += DEFAULT_SYS_TOOLS_PROMPT;
     }
@@ -315,7 +332,9 @@ By following these instructions, you will be able to effectively manage the code
         });
     }
 
-    println!("Chat mode with shell tools - type '/quit' to exit, '/compact' to force context compaction, '/editor' to open editor");
+    println!("Ollama URL: {}...", app_config.url);
+    println!("Model: {}...", app_config.model);
+    println!("Entering Chat mode with shell tools - type '/quit' to exit, '/compact' to force context compaction, '/editor' to open editor");
 
     let mut rl = DefaultEditor::new()?;
 
@@ -406,11 +425,19 @@ By following these instructions, you will be able to effectively manage the code
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    //Configs that we should pull in
+    //1. General App Config
+    //2. Model Config
+    //3. Agent Config -> Might have model config in it
+    //4. Prompt Config
+    //5. MCP/Tools Config
+
     //Check for config
     let app_config: ApplicationConfig = Config::builder()
         .set_default("url", "https://localhost:11434")?
         .set_default("model", "llama2")?
         .set_default("streaming", "true")?
+        .set_default("output_limit", OutputLimit::default())?
         .add_source(config::File::with_name(".chatto.yaml").required(false))
         .add_source(
             config::File::from(

@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
-use std::process::Command;
+use std::{collections::HashMap, process::Command};
+use strum::{Display, EnumString};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct OutputLimit {
@@ -8,8 +9,9 @@ pub struct OutputLimit {
     pub method: TrimMethod,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Display, EnumString)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum TrimMethod {
     Head,
     Tail,
@@ -22,6 +24,15 @@ impl Default for OutputLimit {
             max_size: 2048,
             method: TrimMethod::Head,
         }
+    }
+}
+
+impl From<OutputLimit> for config::Value {
+    fn from(value: OutputLimit) -> Self {
+        let mut ret: HashMap<String, String> = HashMap::new();
+        ret.insert("max_size".to_string(), value.max_size.to_string());
+        ret.insert("method".to_string(), value.method.to_string());
+        ret.into()
     }
 }
 
