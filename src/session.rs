@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::error::Error;
 use std::path::Path;
 
 use crate::ollama::OllamaChatMessage;
@@ -24,7 +25,11 @@ impl ConversationContext {
         }
     }
 
-    pub fn load_session(session_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from(messages: Vec<ChatMessage>) -> Self {
+        Self { messages }
+    }
+
+    pub fn load(session_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let session_path = format!("{}.json", session_name);
         if Path::new(&session_path).exists() {
             let content = fs::read_to_string(&session_path)?;
@@ -35,10 +40,11 @@ impl ConversationContext {
         }
     }
 
-    pub fn save_session(&self, session_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save(&self, session_name: &str) -> Result<(), Box<dyn Error>> {
         let session_path = format!("{}.json", session_name);
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&session_path, content)?;
         Ok(())
     }
+
 }

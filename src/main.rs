@@ -18,7 +18,6 @@ use crate::tools::{
 };
 
 pub mod ollama;
-pub mod session;
 pub mod tools;
 
 #[derive(Parser)]
@@ -94,18 +93,31 @@ impl ApplicationState {
         }
     }
 
-    fn model_configuration(&self, app_config: &ApplicationConfig) -> ModelConfig {
-        match app_config.models.get(self.model.as_str()) {
-            Some(model_config) => model_config.clone().to_owned(),
-            None => ModelConfig::default(),
-        }
-    }
-
     fn save_session(&self, session_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let filename = format!(".chatto-{}.yaml", session_name);
         let yaml_content = serde_yaml::to_string(&self)?;
         fs::write(&filename, yaml_content)?;
         Ok(())
+    }
+
+    /// A simple compact will keep the system message, and only the last assistant message. All
+    /// tool calls and previous user messages will be deleted.
+    pub fn simple_compact(&mut self) {
+        todo!()
+    }
+
+    /// A summary compact will keep the system message. It will send all previous user,
+    /// assistant, and tool messages to a model with instructions to summarize the messages into a
+    /// single paragraph-ish length message.
+    pub fn summary_compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        todo!()
+    }
+
+    fn model_configuration(&self, app_config: &ApplicationConfig) -> ModelConfig {
+        match app_config.models.get(self.model.as_str()) {
+            Some(model_config) => model_config.clone().to_owned(),
+            None => ModelConfig::default(),
+        }
     }
 
     fn add_user_message(&mut self, content: &str) {
@@ -306,7 +318,6 @@ async fn chat_mode(
 
 **Shell commands for non-file operations:**
 - `ls`: List directory contents.
-- `cd`: Change directory (though execute_shell handles this).
 - `git`: Version control operations.
 - `make`, `cargo`, `gcc`: Build and compilation.
 - `grep`: Search within command output (not files - use read_file + search).
@@ -314,7 +325,7 @@ async fn chat_mode(
 - `chmod`, `chown`: File permissions.
 - `curl`, `ssh`, `scp`: Network operations.
 
-**IMPORTANT:** Always use read_file for reading files and write_file for modifications. Only use shell commands when the file tools cannot accomplish the task.
+**IMPORTANT:** Always work within the current or project directory. Always use read_file for reading files and write_file for modifications. Only use shell commands when the file tools cannot accomplish the task.
 "#;
 
     static DEFAULT_SYS_AGENT_PROMPT: &str = r#"You are working in the current directory, which is a codebase. Your role is to efficiently manage files and run commands. Here are your instructions:

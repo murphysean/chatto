@@ -50,17 +50,19 @@ impl OllamaChatMessage {
     pub fn get_token_count_estimate(&self) -> usize {
         let bytes = self.content.len() as f64;
         let words = self.content.split_whitespace().count() as f64;
-        
-        let byte_estimate = bytes / 5.0;  // ~5 bytes per token
-        let word_estimate = words * 1.3;  // ~1.3 tokens per word
-        
+
+        let byte_estimate = bytes / 5.0; // ~5 bytes per token
+        let word_estimate = words * 1.3; // ~1.3 tokens per word
+
         let content_tokens = ((byte_estimate + word_estimate) / 2.0) as usize;
-        
+
         // Add tokens for tool calls if present
-        let tool_call_tokens = self.tool_calls
+        let tool_call_tokens = self
+            .tool_calls
             .as_ref()
             .map(|calls| {
-                calls.iter()
+                calls
+                    .iter()
                     .map(|call| {
                         let json_str = serde_json::to_string(call).unwrap_or_default();
                         (json_str.len() as f64 / 4.0) as usize
@@ -68,7 +70,7 @@ impl OllamaChatMessage {
                     .sum::<usize>()
             })
             .unwrap_or(0);
-        
+
         content_tokens + tool_call_tokens
     }
 }
