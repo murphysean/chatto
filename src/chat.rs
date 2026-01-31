@@ -1,14 +1,16 @@
+use std::{env, fs};
+
 use reqwest::Client;
 use rustyline::DefaultEditor;
 
 use crate::{
-    load_agent_context,
+    app::ApplicationState,
     ollama::{post_ollama_chat, OllamaChatMessage, ToolCall},
     tools::{
         create_read_file_tool, create_shell_tool, create_write_file_tool, execute_command,
         read_file_lines, show_write_diff, write_file_content,
     },
-    ApplicationConfig, ApplicationState,
+    ApplicationConfig,
 };
 
 pub async fn chat_mode(
@@ -365,4 +367,15 @@ By following these instructions, you will efficiently manage the codebase with p
     }
 
     Ok(())
+}
+
+fn load_agent_context() -> Option<String> {
+    let current_dir = env::current_dir().ok()?;
+    let agent_file = current_dir.join("AGENT.md");
+
+    if agent_file.exists() {
+        fs::read_to_string(agent_file).ok()
+    } else {
+        None
+    }
 }

@@ -5,7 +5,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::{ApplicationConfig, ApplicationState};
+use crate::app::ApplicationState;
+use crate::ApplicationConfig;
 
 #[derive(Debug, Serialize)]
 pub struct OllamaChatRequest {
@@ -16,19 +17,6 @@ pub struct OllamaChatRequest {
     pub options: Option<Value>,
     pub stream: bool,
     pub think: bool,
-}
-
-impl From<ApplicationState> for OllamaChatRequest {
-    fn from(value: ApplicationState) -> Self {
-        Self {
-            model: value.model,
-            messages: value.messages,
-            tools: Some(value.tools),
-            options: None,
-            stream: false,
-            think: false,
-        }
-    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
