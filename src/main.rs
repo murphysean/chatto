@@ -222,6 +222,52 @@ impl ApplicationState {
         };
         self.messages.push(message);
     }
+    fn should_prompt_user(&self) -> bool {
+        // If the model hasn't been prompted yet, return true
+        // Messages could be system->user->user (compact and rag might put documents/summaries as
+        // user messages for context), still needs a user prompt to the model as it
+        // hasn't been sent anything yet
+        // If the assistant has left a message that needs a user response return true
+        if self.messages.is_empty() {
+            return true;
+        }
+        //Check if we are in an intitial state and the assistant hasn't responded yet
+        if self
+            .messages
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .count()
+            == 0
+        {
+            return true;
+        }
+        // If last message is a tool (result) then we can just send those results to the assistant
+        if self.messages.last().unwrap().role == "tool" {
+            return false;
+        }
+        // Otherwise prompt user
+        true
+    }
+
+    fn get_token_count_estimate(&self) -> usize {
+        let mut total_tokens = 0;
+        for message in &self.messages {
+            // Use token estimation from message content
+            total_tokens += message.content.chars().count(); // Simplified for example
+                                                             // In real implementation would use a proper tokenization library
+        }
+        // Apply additional token count for system prompt if needed
+        let sys_prompt_len = self
+            .messages
+            .iter()
+            .find(|m| m.role == "system")
+            .map(|m| m.content.len())
+            .unwrap_or(0);
+        // Add token count for system prompt (simplified)
+        total_tokens += sys_prompt_len;
+        // Return total token count
+        total_tokens
+    }
 }
 
 fn load_agent_context() -> Option<String> {
@@ -340,9 +386,12 @@ By following these instructions, you will efficiently manage the codebase with p
 
     //REPL Loop
     loop {
-        if app_state.messages.last().unwrap().role == "assistant"
-            || app_state.messages.last().unwrap().role == "system"
-        {
+        if app_state.should_prompt_user() {
+            //TODO Print out the current context estimate
+            println!(
+                "Waiting on your response... (Context {} / TODO)",
+                app_state.get_token_count_estimate()
+            );
             let line = rl.readline("> ").unwrap();
             let input = {
                 rl.add_history_entry(&line)?;
@@ -355,6 +404,17 @@ By following these instructions, you will efficiently manage the codebase with p
                     println!("Session saved: {}", session_name);
                 }
                 break;
+            }
+
+            //TODO Add back in /compact
+            //Will send all messages to model with a different system message asking the model to
+            //read all messages and compact to a paragraph. We will send this out and then include
+            //it as a single user message after the system message, resetting the app_state
+            //messages to only two messages the system message, and the user message providing the
+            //summary (Probably surrounded with some sort of contextual md like header footer to
+            //let the model know this is a summary document/message)
+            if input == "/compact" {
+                app_state.messages.resize(1, OllamaChatMessage::default());
             }
 
             app_state.add_user_message(&input);
@@ -611,3 +671,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+

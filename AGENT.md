@@ -5,7 +5,9 @@
 
 ## Architecture
 - `src/main.rs` - Entry point with CLI argument parsing
-- `src/chat.rs` - Core chat functionality and Ollama API integration
+- `src/ollama.rs` - Core chat functionality and Ollama API integration
+- `src/tools.rs` - Contains functionality for some of the built in agentic tools like shell command, read/write files
+- `src/session.rs` - Allows saving a session to disk, reading it back out for persistant chat sessions
 - Uses `.chatto.yaml` configuration file in user's home directory
 - Built with async/await pattern using tokio
 
@@ -29,8 +31,9 @@
 - Command structure: `chatto chat --url <URL> --model <MODEL>`
 
 ## Common Development Tasks
-- New CLI commands should be added as subcommands in main.rs
-- Chat functionality extensions go in chat.rs
+- New CLI commands should be added as subcommands in chat.rs
+- Tool implementations should go in tools.rs
+- Chat functionality extensions go in main.rs
 - Configuration changes require updating the YAML schema
 - API interactions should handle network errors gracefully
 

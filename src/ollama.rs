@@ -31,7 +31,7 @@ impl From<ApplicationState> for OllamaChatRequest {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct OllamaChatMessage {
     pub role: String,
     pub content: String,
