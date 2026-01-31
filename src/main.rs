@@ -250,23 +250,22 @@ impl ApplicationState {
     }
 
     fn get_token_count_estimate(&self) -> usize {
-        let mut total_tokens = 0;
-        for message in &self.messages {
-            // Use token estimation from message content
-            total_tokens += message.content.chars().count(); // Simplified for example
-                                                             // In real implementation would use a proper tokenization library
-        }
-        // Apply additional token count for system prompt if needed
-        let sys_prompt_len = self
+        let messages_tokens = self
             .messages
             .iter()
-            .find(|m| m.role == "system")
-            .map(|m| m.content.len())
-            .unwrap_or(0);
-        // Add token count for system prompt (simplified)
-        total_tokens += sys_prompt_len;
-        // Return total token count
-        total_tokens
+            .map(|m| m.get_token_count_estimate())
+            .sum::<usize>();
+
+        let tools_tokens = self
+            .tools
+            .iter()
+            .map(|tool| {
+                let json_str = serde_json::to_string(tool).unwrap_or_default();
+                (json_str.len() as f64 / 4.0) as usize // ~4 chars per token for JSON
+            })
+            .sum::<usize>();
+
+        messages_tokens + tools_tokens
     }
 }
 
@@ -387,11 +386,17 @@ By following these instructions, you will efficiently manage the codebase with p
     //REPL Loop
     loop {
         if app_state.should_prompt_user() {
-            //TODO Print out the current context estimate
+            let max_context = app_config
+                .models
+                .get(app_state.model.as_str())
+                .map(|m| m.num_ctx.unwrap_or(4096))
+                .unwrap_or(4096);
             println!(
-                "Waiting on your response... (Context {} / TODO)",
-                app_state.get_token_count_estimate()
+                "Waiting on your response... (Context {} tokens / Max {} tokens)",
+                app_state.get_token_count_estimate(),
+                max_context
             );
+
             let line = rl.readline("> ").unwrap();
             let input = {
                 rl.add_history_entry(&line)?;
@@ -671,4 +676,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
