@@ -4,7 +4,7 @@ use std::{fs, io, path::Path};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ollama::OllamaChatRequest;
+use crate::ollama::{OllamaChatRequest, StreamingChatHandler};
 use crate::{
     ollama::{OllamaChatMessage, OllamaChatResponse, OllamaChatResponseStreamingState},
     ApplicationConfig, ModelConfig,
@@ -27,6 +27,42 @@ impl From<ApplicationState> for OllamaChatRequest {
             options: None,
             stream: false,
             think: false,
+        }
+    }
+}
+
+impl StreamingChatHandler for &mut ApplicationState {
+    fn process_streaming_response(
+        &mut self,
+        previous_streaming_state: &OllamaChatResponseStreamingState,
+        _current_streaming_state: &OllamaChatResponseStreamingState,
+        response: &OllamaChatResponse,
+    ) {
+        if let Some(message) = &response.message {
+            if let Some(thinking) = &message.thinking {
+                //If it's a thought chunk, just send it to console
+                if !thinking.is_empty() {
+                    if let OllamaChatResponseStreamingState::Recieving = previous_streaming_state {
+                        println!("Assistant Thinking...")
+                    }
+                    print!("\x1b[90m{}\x1b[0m", thinking);
+                    io::stdout().flush().unwrap_or_default();
+                }
+            }
+            //Regular messages get saved into the last message
+            if !message.content.is_empty() {
+                if let OllamaChatResponseStreamingState::Thinking = previous_streaming_state {
+                    println!("\nAssistant:")
+                }
+                print!("{}", message.content);
+                io::stdout().flush().unwrap_or_default();
+            }
+            //Tool calls will come through here as well
+            if message.tool_calls.is_some() {
+                if let OllamaChatResponseStreamingState::Responding = previous_streaming_state {
+                    println!("\nTool Call(s)...")
+                }
+            }
         }
     }
 }
@@ -128,64 +164,6 @@ impl ApplicationState {
                 println!("Assistant Requests Tool Call(s)");
             }
         }
-    }
-
-    pub fn process_assistant_message_chunk(
-        &mut self,
-        prev_state: OllamaChatResponseStreamingState,
-        resp: OllamaChatResponse,
-    ) -> OllamaChatResponseStreamingState {
-        let mut streaming_state = OllamaChatResponseStreamingState::Recieving;
-        if let Some(message) = resp.message {
-            if let Some(thinking) = message.thinking {
-                //If it's a thought chunk, just send it to console
-                if !thinking.is_empty() {
-                    if let OllamaChatResponseStreamingState::Recieving = prev_state {
-                        println!("Assistant Thinking...")
-                    }
-                    print!("\x1b[90m{}\x1b[0m", thinking);
-                    io::stdout().flush().unwrap_or_default();
-                    streaming_state = OllamaChatResponseStreamingState::Thinking;
-                }
-            }
-            //Regular messages get saved into the last message
-            if !message.content.is_empty() {
-                if let OllamaChatResponseStreamingState::Thinking = prev_state {
-                    println!("\nAssistant:")
-                }
-                if let Some(last_message) = self.messages.last_mut() {
-                    last_message.content += &message.content;
-                }
-                print!("{}", message.content);
-                io::stdout().flush().unwrap_or_default();
-                streaming_state = OllamaChatResponseStreamingState::Responding;
-            }
-            //Tool calls will come through here as well
-            if let Some(tool_calls) = message.tool_calls {
-                if let Some(last_message) = self.messages.last_mut() {
-                    if let Some(lm_tool_calls) = last_message.tool_calls.as_mut() {
-                        lm_tool_calls.extend(tool_calls);
-                    } else {
-                        last_message.tool_calls = Some(tool_calls);
-                    }
-                }
-                if let OllamaChatResponseStreamingState::Responding = prev_state {
-                    println!("\nTool Call(s)...")
-                }
-                streaming_state = OllamaChatResponseStreamingState::CallingTools;
-            }
-        }
-        streaming_state
-    }
-
-    pub fn finalize_assistant_message(&mut self, resp: &OllamaChatResponse) {
-        //Assume this is the last of the streaming messages, it's marked done
-        println!(
-            "\nAssistant Finished... Prompt: {}, Eval: {}, Dur: {}",
-            resp.prompt_eval_count.unwrap_or_default(),
-            resp.eval_count.unwrap_or_default(),
-            resp.total_duration.unwrap_or_default()
-        );
     }
 
     pub fn add_tool_result(&mut self, tool_call_id: &str, tool_name: &str, result: &str) {

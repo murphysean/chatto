@@ -2,11 +2,12 @@ use std::{env, fs, io::Write, process::Command};
 
 use reqwest::Client;
 use rustyline::DefaultEditor;
+use serde_json::json;
 use tempfile::NamedTempFile;
 
 use crate::{
     app::ApplicationState,
-    ollama::{post_ollama_chat, OllamaChatMessage, ToolCall},
+    ollama::{post_ollama_chat, OllamaChatMessage, OllamaChatRequest, ToolCall},
     tools::{
         create_read_file_tool, create_shell_tool, create_write_file_tool, execute_command,
         read_file_lines, show_write_diff, write_file_content,
@@ -223,16 +224,39 @@ By following these instructions, you will efficiently manage the codebase with p
         );
 
         //Call Ollamas chat endpoint
-        if let Err(e) = post_ollama_chat(&client, &app_config, &mut app_state).await {
-            eprintln!("❌ API Error: {}", e);
-            eprintln!("Please check:");
-            eprintln!("  - Ollama is running (try: ollama serve)");
-            eprintln!(
-                "  - Model '{}' is available (try: ollama list)",
-                app_config.model
-            );
-            eprintln!("  - URL '{}' is correct", app_config.url);
-            return Err(e);
+        let mut request: OllamaChatRequest = app_state.clone().into();
+        request.stream = app_config.stream;
+        request.think = false;
+        if let Some(model_config) = app_config.models.get(app_state.model.as_str()) {
+            request.think = model_config.think;
+            if !model_config.tools {
+                request.tools = None;
+            }
+            if model_config.num_ctx.is_some() {
+                request.options = Some(json!({"num_ctx":model_config.num_ctx.unwrap()}));
+            }
+        }
+        match post_ollama_chat(&client, app_config.url.as_str(), &request, Some(&mut app_state)).await {
+            Ok(response) => {
+                //Assume this is the last of the streaming messages, it's marked done
+                println!(
+                    "\nAssistant Finished... Prompt: {}, Eval: {}, Dur: {}",
+                    response.prompt_eval_count.unwrap_or_default(),
+                    response.eval_count.unwrap_or_default(),
+                    response.total_duration.unwrap_or_default()
+                );
+            }
+            Err(e) => {
+                eprintln!("❌ API Error: {}", e);
+                eprintln!("Please check:");
+                eprintln!("  - Ollama is running (try: ollama serve)");
+                eprintln!(
+                    "  - Model '{}' is available (try: ollama list)",
+                    app_config.model
+                );
+                eprintln!("  - URL '{}' is correct", app_config.url);
+                return Err(e);
+            }
         }
         println!();
     }
@@ -481,4 +505,3 @@ fn open_editor(messages: &Vec<OllamaChatMessage>) -> Result<String, Box<dyn std:
 
     Err("No message found after separator".into())
 }
-

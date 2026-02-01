@@ -3,10 +3,7 @@ use std::error::Error;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-
-use crate::app::ApplicationState;
-use crate::ApplicationConfig;
+use serde_json::Value;
 
 #[derive(Debug, Serialize)]
 pub struct OllamaChatRequest {
@@ -63,7 +60,7 @@ impl OllamaChatMessage {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct OllamaChatResponseMessage {
     pub role: String,
     pub content: String,
@@ -71,7 +68,7 @@ pub struct OllamaChatResponseMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct OllamaChatResponse {
     pub model: String,
     pub created_at: String,
@@ -81,17 +78,73 @@ pub struct OllamaChatResponse {
     #[serde(default)]
     pub done: bool,
     pub done_reason: Option<String>,
-    #[serde(default)]
-    pub tool_calls: Option<Vec<ToolCall>>,
 
     pub total_duration: Option<u64>,
     pub load_duration: Option<u64>,
     pub prompt_eval_count: Option<u64>,
-    pub prompt_eval_duariont: Option<u64>,
+    pub prompt_eval_duration: Option<u64>,
     pub eval_count: Option<u64>,
     pub eval_duration: Option<u64>,
 
     pub images: Option<Vec<String>>,
+}
+
+impl OllamaChatResponse {
+    fn merge(&mut self, incoming: &OllamaChatResponse) -> OllamaChatResponseStreamingState {
+        self.model = incoming.model.clone();
+        self.created_at = incoming.created_at.clone();
+        if let Some(message) = &incoming.message {
+            if self.message.is_none() {
+                self.message = Some(OllamaChatResponseMessage::default());
+            }
+
+            if let Some(thinking) = &message.thinking {
+                if self.message.as_ref().unwrap().thinking.is_none() {
+                    self.message.as_mut().unwrap().thinking = Some(String::new());
+                }
+                self.message
+                    .as_mut()
+                    .unwrap()
+                    .thinking
+                    .as_mut()
+                    .unwrap()
+                    .push_str(thinking);
+                return OllamaChatResponseStreamingState::Thinking;
+            }
+            if !message.content.is_empty() {
+                self.message
+                    .as_mut()
+                    .unwrap()
+                    .content
+                    .push_str(&message.content);
+                return OllamaChatResponseStreamingState::Responding;
+            }
+            if let Some(tool_calls) = &message.tool_calls {
+                if self.message.as_ref().unwrap().tool_calls.is_none() {
+                    self.message.as_mut().unwrap().tool_calls = Some(Vec::new());
+                }
+                self.message
+                    .as_mut()
+                    .unwrap()
+                    .tool_calls
+                    .as_mut()
+                    .unwrap()
+                    .extend(tool_calls.iter().cloned());
+                return OllamaChatResponseStreamingState::CallingTools;
+            }
+        }
+        self.done = incoming.done;
+        self.done_reason = incoming.done_reason.clone();
+
+        self.total_duration = incoming.total_duration;
+        self.load_duration = incoming.load_duration;
+        self.prompt_eval_count = incoming.prompt_eval_count;
+        self.prompt_eval_duration = incoming.prompt_eval_duration;
+        self.eval_count = incoming.eval_count;
+        self.eval_duration = incoming.eval_duration;
+
+        OllamaChatResponseStreamingState::Done
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize)]
@@ -108,6 +161,7 @@ pub struct ToolCallFunction {
     pub arguments: Value,
 }
 
+#[derive(Copy, Clone)]
 pub enum OllamaChatResponseStreamingState {
     Recieving,
     Thinking,
@@ -116,30 +170,27 @@ pub enum OllamaChatResponseStreamingState {
     Done,
 }
 
+pub trait StreamingChatHandler {
+    fn process_streaming_response(
+        &mut self,
+        previous_streaming_state: &OllamaChatResponseStreamingState,
+        current_streaming_state: &OllamaChatResponseStreamingState,
+        ollama_response: &OllamaChatResponse,
+    );
+}
+
 pub async fn post_ollama_chat(
     client: &Client,
-    config: &ApplicationConfig,
-    state: &mut ApplicationState,
+    url: &str,
+    request: &OllamaChatRequest,
+    mut streaming_chat_handler: Option<impl StreamingChatHandler>,
 ) -> Result<OllamaChatResponse, Box<dyn Error>> {
-    let mut request: OllamaChatRequest = state.clone().into();
-    request.stream = config.stream;
-    request.think = false;
-    if let Some(model_config) = config.models.get(state.model.as_str()) {
-        request.think = model_config.think;
-        if !model_config.tools {
-            request.tools = None;
-        }
-        if model_config.num_ctx.is_some() {
-            request.options = Some(json!({"num_ctx":model_config.num_ctx.unwrap()}));
-        }
-    }
-
     let response = client
-        .post(format!("{}/api/chat", config.url))
+        .post(format!("{}/api/chat", url))
         .json(&request)
         .send()
         .await
-        .map_err(|e| format!("Failed to connect to Ollama at {}: {}", config.url, e))?;
+        .map_err(|e| format!("Failed to connect to Ollama at {}: {}", url, e))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -158,34 +209,36 @@ pub async fn post_ollama_chat(
         == Some("application/json")
     {
         let body: OllamaChatResponse = response.json().await?;
-        state.add_assistant_response(body.clone());
-        state.finalize_assistant_message(&body);
         return Ok(body);
     }
 
-    state.add_assistant_message("");
-
     let mut stream = response.bytes_stream();
 
-    let mut streaming_state: OllamaChatResponseStreamingState =
-        OllamaChatResponseStreamingState::Recieving;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Stream chunk error: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
+        let mut streaming_state: OllamaChatResponseStreamingState =
+            OllamaChatResponseStreamingState::Recieving;
+        let mut ollama_response: OllamaChatResponse = OllamaChatResponse::default();
 
         for line in chunk_str.lines() {
             if line.trim().is_empty() {
                 continue;
             }
             match serde_json::from_str::<OllamaChatResponse>(line) {
-                Ok(ollama_response) => {
-                    if ollama_response.done {
-                        state.finalize_assistant_message(&ollama_response);
+                Ok(response_chunk) => {
+                    let prev_streaming_state = streaming_state;
+                    streaming_state = ollama_response.merge(&response_chunk);
+                    if let Some(streaming_chat_handler) = streaming_chat_handler.as_mut() {
+                        streaming_chat_handler.process_streaming_response(
+                            &prev_streaming_state,
+                            &streaming_state,
+                            &response_chunk,
+                        );
+                    }
+                    if let OllamaChatResponseStreamingState::Done = streaming_state {
                         return Ok(ollama_response);
                     }
-                    //update app state with incoming message
-                    streaming_state =
-                        state.process_assistant_message_chunk(streaming_state, ollama_response);
                 }
                 Err(e) => {
                     println!("{line}");
