@@ -16,7 +16,7 @@ use crate::{
 
 pub async fn chat_mode(
     app_config: ApplicationConfig,
-    session: Option<String>,
+    mut session: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
 
@@ -148,6 +148,7 @@ By following these instructions, you will efficiently manage the codebase with p
                 rl.add_history_entry(&line)?;
                 line.trim().to_string()
             };
+            let mut user_content: String = String::new();
 
             if input == "/quit" || input == "/exit" || input == "/done" {
                 if let Some(ref session_name) = session {
@@ -157,13 +158,28 @@ By following these instructions, you will efficiently manage the codebase with p
                 break;
             }
 
+            if input.starts_with("/save") {
+                let session_name = input.trim_start_matches("/save").trim();
+                if session_name.is_empty() {
+                    eprintln!("Error: session name cannot be empty");
+                    continue;
+                }
+                if let Err(e) = app_state.save_session(session_name) {
+                    eprintln!("Error saving session: {}", e);
+                } else {
+                    println!("Session saved: {}", session_name);
+                }
+                session = Some(session_name.to_string());
+                continue;
+            }
+
             if input == "/edit" || input == "/editor" {
                 //This will open up the system defined or config defined editor like vim, emacs, or
                 //nano. The whole session will be serialized as yaml and the user can edit any of it in
                 //place. At the bottom is an open area where the user can type in a complex message.
                 //When the file is closed, or the editor, then the whole file is read back in, the
                 //messages array is updated and the new message is pushed as a user message.
-                open_editor(&app_state.messages)?;
+                user_content = open_editor(&app_state.messages)?;
             }
 
             if input == "/tools" {
@@ -173,21 +189,32 @@ By following these instructions, you will efficiently manage the codebase with p
                 //The response will then be appended to the last agent response and things will
                 //continue from that point.
                 todo!()
+                //continue;
             }
 
             if input == "/reset" {
                 app_state.messages.resize(1, OllamaChatMessage::default());
+                continue;
             }
 
             if input == "/trim" {
                 app_state.trim();
+                continue;
             }
 
             if input == "/compact" {
                 app_state.compact()?;
+                continue;
             }
 
-            app_state.add_user_message(&input);
+            if input == "/send" {
+                //Skip creating a user message and just send the chat to the server as is
+                println!("Forcing send without user message...");
+            } else if user_content.is_empty() {
+                app_state.add_user_message(&input);
+            } else {
+                app_state.add_user_message(&user_content);
+            }
         }
 
         println!(
@@ -454,3 +481,4 @@ fn open_editor(messages: &Vec<OllamaChatMessage>) -> Result<String, Box<dyn std:
 
     Err("No message found after separator".into())
 }
+

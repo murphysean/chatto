@@ -58,7 +58,7 @@ impl ApplicationState {
     }
 
     pub fn save_session(&self, session_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let filename = format!(".chatto-{}.yaml", session_name);
+        let filename = format!(".chatto-{}.session.yaml", session_name);
         let yaml_content = serde_yaml::to_string(&self)?;
         fs::write(&filename, yaml_content)?;
         Ok(())
