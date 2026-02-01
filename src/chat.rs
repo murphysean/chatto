@@ -1,7 +1,8 @@
-use std::{env, fs};
+use std::{env, fs, io::Write, process::Command};
 
 use reqwest::Client;
 use rustyline::DefaultEditor;
+use tempfile::NamedTempFile;
 
 use crate::{
     app::ApplicationState,
@@ -117,6 +118,19 @@ By following these instructions, you will efficiently manage the codebase with p
 
     //REPL Loop
     loop {
+        //If there are tool calls that need to be executed, prompt user for those
+        let mut temp_tool_calls: Vec<ToolCall> = Vec::new();
+        if let Some(ref tool_calls) = app_state.messages.last().as_ref().unwrap().tool_calls {
+            for tc in tool_calls {
+                temp_tool_calls.push(tc.clone());
+            }
+        }
+        if !temp_tool_calls.is_empty() {
+            let tool_messages = process_tool_calls(&mut rl, &app_config, &temp_tool_calls);
+            app_state.messages.extend(tool_messages);
+        }
+
+        //Prompt user for a message
         if app_state.should_prompt_user() {
             let max_context = app_config
                 .models
@@ -135,7 +149,7 @@ By following these instructions, you will efficiently manage the codebase with p
                 line.trim().to_string()
             };
 
-            if input == "/quit" {
+            if input == "/quit" || input == "/exit" || input == "/done" {
                 if let Some(ref session_name) = session {
                     app_state.save_session(session_name)?;
                     println!("Session saved: {}", session_name);
@@ -143,19 +157,39 @@ By following these instructions, you will efficiently manage the codebase with p
                 break;
             }
 
-            //TODO Add back in /compact
-            //Will send all messages to model with a different system message asking the model to
-            //read all messages and compact to a paragraph. We will send this out and then include
-            //it as a single user message after the system message, resetting the app_state
-            //messages to only two messages the system message, and the user message providing the
-            //summary (Probably surrounded with some sort of contextual md like header footer to
-            //let the model know this is a summary document/message)
-            if input == "/compact" {
+            if input == "/edit" || input == "/editor" {
+                //This will open up the system defined or config defined editor like vim, emacs, or
+                //nano. The whole session will be serialized as yaml and the user can edit any of it in
+                //place. At the bottom is an open area where the user can type in a complex message.
+                //When the file is closed, or the editor, then the whole file is read back in, the
+                //messages array is updated and the new message is pushed as a user message.
+                open_editor(&app_state.messages)?;
+            }
+
+            if input == "/tools" {
+                //TODO Some models are not tool enabled. If we have a specific agentic tool enabled model
+                //like function_gemma we can send the context to that model with specific sys prompt asking
+                //it to review the agent response and see if any tool calls can be pulled out of it.
+                //The response will then be appended to the last agent response and things will
+                //continue from that point.
+                todo!()
+            }
+
+            if input == "/reset" {
                 app_state.messages.resize(1, OllamaChatMessage::default());
+            }
+
+            if input == "/trim" {
+                app_state.trim();
+            }
+
+            if input == "/compact" {
+                app_state.compact()?;
             }
 
             app_state.add_user_message(&input);
         }
+
         println!(
             "\nSending Request {} to {}...",
             app_state.model, app_config.url
@@ -174,24 +208,116 @@ By following these instructions, you will efficiently manage the codebase with p
             return Err(e);
         }
         println!();
+    }
 
-        //Prompt user for tool calls
-        let mut temp_tool_calls: Vec<ToolCall> = Vec::new();
-        if let Some(ref tool_calls) = app_state.messages.last().as_ref().unwrap().tool_calls {
-            for tc in tool_calls {
-                temp_tool_calls.push(tc.clone());
+    Ok(())
+}
+
+/// Will take a vec of tool calls, prompt the user for approval and return a set of tool messages
+fn process_tool_calls(
+    rl: &mut DefaultEditor,
+    app_config: &ApplicationConfig,
+    tool_calls: &Vec<ToolCall>,
+) -> Vec<OllamaChatMessage> {
+    let mut ret: Vec<OllamaChatMessage> = Vec::new();
+    for tc in tool_calls {
+        match tc.function.name.as_str() {
+            "execute_shell" => {
+                println!(
+                    "🛠️  Shell Command Requested!\n ● Command: {}\n ● Reason: {}",
+                    tc.function.arguments.get("command").unwrap(),
+                    tc.function.arguments.get("reason").unwrap()
+                );
+            }
+            "read_file" => {
+                let path = tc.function.arguments.get("path").unwrap().as_str().unwrap();
+                let start_line = tc
+                    .function
+                    .arguments
+                    .get("start_line")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+                let end_line = tc
+                    .function
+                    .arguments
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+
+                println!("🛠️  Read File Requested!");
+                match (start_line, end_line) {
+                    (Some(start), Some(end)) => {
+                        println!(" ● Reading file: {}, from line {} to {}", path, start, end)
+                    }
+                    (Some(start), None) => {
+                        println!(" ● Reading file: {}, from line {} to end", path, start)
+                    }
+                    (None, Some(end)) => {
+                        println!(" ● Reading file: {}, from start to line {}", path, end)
+                    }
+                    (None, None) => println!(" ● Reading file: {}", path),
+                }
+            }
+            "write_file" => {
+                let path = tc.function.arguments.get("path").unwrap().as_str().unwrap();
+                let content = tc
+                    .function
+                    .arguments
+                    .get("content")
+                    .unwrap()
+                    .as_str()
+                    .unwrap();
+                let mode = tc.function.arguments.get("mode").and_then(|v| v.as_str());
+                let start_line = tc
+                    .function
+                    .arguments
+                    .get("start_line")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+                let end_line = tc
+                    .function
+                    .arguments
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
+
+                println!("🛠️  Write File Requested!");
+                match (mode.unwrap_or("overwrite"), start_line, end_line) {
+                    ("replace", Some(start), Some(end)) => {
+                        println!(" ● Replacing lines {}-{} in: {}", start, end, path)
+                    }
+                    ("replace", Some(start), None) => {
+                        println!(" ● Replacing from line {} in: {}", start, path)
+                    }
+                    ("insert", Some(line), _) => {
+                        println!(" ● Inserting at line {} in: {}", line, path)
+                    }
+                    ("append", _, _) => println!(" ● Appending to: {}", path),
+                    _ => println!(" ● Writing to: {}", path),
+                }
+                println!();
+
+                show_write_diff(path, content, mode, start_line, end_line);
+            }
+            _ => {
+                println!("Tool Call {} Requested! Allow?", tc.function.name);
             }
         }
-        for tc in &temp_tool_calls {
-            match tc.function.name.as_str() {
-                "execute_shell" => {
-                    println!(
-                        "🛠️  Tool Call {} Requested! Allow?\nCommand: {}\nReason: {}",
-                        tc.function.name,
-                        tc.function.arguments.get("command").unwrap(),
-                        tc.function.arguments.get("reason").unwrap()
-                    );
-                }
+        let input = match rl.readline("y or no with reason/feedback > ") {
+            Ok(line) => line.trim().to_string(),
+            Err(_) => "ERROR".to_string(),
+        };
+        if input == "y" || input == "Y" {
+            let tool_result = match tc.function.name.as_str() {
+                "execute_shell" => execute_command(
+                    tc.function
+                        .arguments
+                        .get("command")
+                        .unwrap()
+                        .as_str()
+                        .unwrap(),
+                    &app_config.output_limit,
+                ),
                 "read_file" => {
                     let path = tc.function.arguments.get("path").unwrap().as_str().unwrap();
                     let start_line = tc
@@ -206,21 +332,33 @@ By following these instructions, you will efficiently manage the codebase with p
                         .get("end_line")
                         .and_then(|v| v.as_u64())
                         .map(|v| v as usize);
+                    let result = read_file_lines(path, start_line, end_line);
+                    let byte_count = result.len();
 
-                    println!("🛠️  Using tool: read_file");
-                    println!(" ⋮ ");
-                    match (start_line, end_line) {
-                        (Some(start), Some(end)) => {
-                            println!(" ● Reading file: {}, from line {} to {}", path, start, end)
-                        }
-                        (Some(start), None) => {
-                            println!(" ● Reading file: {}, from line {} to end", path, start)
-                        }
-                        (None, Some(end)) => {
-                            println!(" ● Reading file: {}, from start to line {}", path, end)
-                        }
-                        (None, None) => println!(" ● Reading file: {}", path),
+                    // Count actual lines read
+                    let line_count = result.lines().count();
+                    let first_line = result
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split(':').next())
+                        .and_then(|num| num.trim().parse::<usize>().ok())
+                        .unwrap_or(1);
+                    let last_line = first_line + line_count.saturating_sub(1);
+
+                    if line_count > 0 {
+                        println!(
+                            " ✓ Successfully read {} bytes, {} lines ({}-{}) from {}",
+                            byte_count, line_count, first_line, last_line, path
+                        );
+                    } else {
+                        println!(" ✓ Successfully read {} bytes from {}", byte_count, path);
                     }
+
+                    // Print what we're sending to the LLM
+                    println!("OUTPUT:");
+                    println!("{}", result);
+
+                    result
                 }
                 "write_file" => {
                     let path = tc.function.arguments.get("path").unwrap().as_str().unwrap();
@@ -244,129 +382,28 @@ By following these instructions, you will efficiently manage the codebase with p
                         .get("end_line")
                         .and_then(|v| v.as_u64())
                         .map(|v| v as usize);
-
-                    println!("🛠️  Using tool: write_file");
-                    println!(" ⋮ ");
-                    match (mode.unwrap_or("overwrite"), start_line, end_line) {
-                        ("replace", Some(start), Some(end)) => {
-                            println!(" ● Replacing lines {}-{} in: {}", start, end, path)
-                        }
-                        ("replace", Some(start), None) => {
-                            println!(" ● Replacing from line {} in: {}", start, path)
-                        }
-                        ("insert", Some(line), _) => {
-                            println!(" ● Inserting at line {} in: {}", line, path)
-                        }
-                        ("append", _, _) => println!(" ● Appending to: {}", path),
-                        _ => println!(" ● Writing to: {}", path),
-                    }
-                    println!();
-
-                    show_write_diff(path, content, mode, start_line, end_line);
+                    write_file_content(path, content, mode, start_line, end_line)
                 }
-                _ => {
-                    println!("Tool Call {} Requested! Allow?", tc.function.name);
-                }
-            }
-            let input = match rl.readline("y or no with reason/feedback > ") {
-                Ok(line) => line.trim().to_string(),
-                Err(_) => "ERROR".to_string(),
+                _ => format!("Unknown tool: {}", tc.function.name),
             };
-            if input == "y" || input == "Y" {
-                let tool_result = match tc.function.name.as_str() {
-                    "execute_shell" => execute_command(
-                        tc.function
-                            .arguments
-                            .get("command")
-                            .unwrap()
-                            .as_str()
-                            .unwrap(),
-                        &app_config.output_limit,
-                    ),
-                    "read_file" => {
-                        let path = tc.function.arguments.get("path").unwrap().as_str().unwrap();
-                        let start_line = tc
-                            .function
-                            .arguments
-                            .get("start_line")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as usize);
-                        let end_line = tc
-                            .function
-                            .arguments
-                            .get("end_line")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as usize);
-                        let result = read_file_lines(path, start_line, end_line);
-                        let byte_count = result.len();
-
-                        // Count actual lines read
-                        let line_count = result.lines().count();
-                        let first_line = result
-                            .lines()
-                            .next()
-                            .and_then(|line| line.split(':').next())
-                            .and_then(|num| num.trim().parse::<usize>().ok())
-                            .unwrap_or(1);
-                        let last_line = first_line + line_count.saturating_sub(1);
-
-                        if line_count > 0 {
-                            println!(
-                                " ✓ Successfully read {} bytes, {} lines ({}-{}) from {}",
-                                byte_count, line_count, first_line, last_line, path
-                            );
-                        } else {
-                            println!(" ✓ Successfully read {} bytes from {}", byte_count, path);
-                        }
-
-                        // Print what we're sending to the LLM
-                        println!("OUTPUT:");
-                        println!("{}", result);
-
-                        result
-                    }
-                    "write_file" => {
-                        let path = tc.function.arguments.get("path").unwrap().as_str().unwrap();
-                        let content = tc
-                            .function
-                            .arguments
-                            .get("content")
-                            .unwrap()
-                            .as_str()
-                            .unwrap();
-                        let mode = tc.function.arguments.get("mode").and_then(|v| v.as_str());
-                        let start_line = tc
-                            .function
-                            .arguments
-                            .get("start_line")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as usize);
-                        let end_line = tc
-                            .function
-                            .arguments
-                            .get("end_line")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as usize);
-                        write_file_content(path, content, mode, start_line, end_line)
-                    }
-                    _ => format!("Unknown tool: {}", tc.function.name),
-                };
-                app_state.add_tool_result(
-                    tc.id.as_ref().unwrap(),
-                    tc.function.name.as_str(),
-                    &tool_result,
-                );
-            } else {
-                app_state.add_tool_result(
-                    tc.id.as_ref().unwrap(),
-                    tc.function.name.as_str(),
-                    format!("TOOL CALL REJECTED. Feedback/Reason: {}", &input).as_str(),
-                );
-            }
+            ret.push(OllamaChatMessage {
+                role: "tool".to_string(),
+                content: tool_result,
+                tool_calls: None,
+                tool_call_id: tc.id.clone(),
+                tool_name: Some(tc.function.name.clone()),
+            });
+        } else {
+            ret.push(OllamaChatMessage {
+                role: "tool".to_string(),
+                content: format!("TOOL CALL REJECTED. Feedback/Reason: {}", &input),
+                tool_calls: None,
+                tool_call_id: tc.id.clone(),
+                tool_name: Some(tc.function.name.clone()),
+            });
         }
     }
-
-    Ok(())
+    ret
 }
 
 fn load_agent_context() -> Option<String> {
@@ -378,4 +415,42 @@ fn load_agent_context() -> Option<String> {
     } else {
         None
     }
+}
+
+fn open_editor(messages: &Vec<OllamaChatMessage>) -> Result<String, Box<dyn std::error::Error>> {
+    let yaml_content = serde_yaml::to_string(messages)?;
+
+    let editor_content = format!("# Chatto API Request Editor\n# Edit the API request below, then add your message after the '---' separator\n\n{}\n\n---\n\n# Add your message below this line:\n", yaml_content);
+
+    let mut temp_file = NamedTempFile::new()?;
+    temp_file.write_all(editor_content.as_bytes())?;
+    temp_file.flush()?;
+
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+
+    let status = Command::new(&editor).arg(temp_file.path()).status()?;
+
+    if !status.success() {
+        return Err("Editor exited with error".into());
+    }
+
+    let edited_content = fs::read_to_string(temp_file.path())?;
+
+    if let Some(separator_pos) = edited_content.rfind("\n---\n") {
+        let message_part = &edited_content[separator_pos + 5..];
+
+        let message = message_part
+            .lines()
+            .skip_while(|line| line.trim().is_empty() || line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+
+        if !message.is_empty() {
+            return Ok(message);
+        }
+    }
+
+    Err("No message found after separator".into())
 }

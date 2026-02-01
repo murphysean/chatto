@@ -66,14 +66,14 @@ impl ApplicationState {
 
     /// A simple compact will keep the system message, and only the last assistant message. All
     /// tool calls and previous user messages will be deleted.
-    pub fn simple_compact(&mut self) {
+    pub fn trim(&mut self) {
         todo!()
     }
 
     /// A summary compact will keep the system message. It will send all previous user,
     /// assistant, and tool messages to a model with instructions to summarize the messages into a
     /// single paragraph-ish length message.
-    pub fn summary_compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         todo!()
     }
 
