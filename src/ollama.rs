@@ -210,8 +210,6 @@ pub async fn post_ollama_chat(
         return Err(format!("API Error: Status: {}: {}", status, error_text).into());
     }
 
-    println!("{:?}", response.headers().get("Content-Type"));
-
     // Check content type
     if response
         .headers()

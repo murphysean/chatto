@@ -35,7 +35,7 @@ pub async fn chat_mode(
         create_write_file_tool(),
     ];
 
-    static DEFAULT_SYS_TOOLS_PROMPT: &str = r#"You are an AI assistant with access to specialized file tools and shell commands. ALWAYS prefer the dedicated file tools over shell commands for reading and writing files:
+    static DEFAULT_SYS_TOOLS_PROMPT: &str = r#"You are an AI assistant with access to specialized file tools and shell commands. ALWAYS prefer the dedicated file tools over shell commands for reading and writing files. If you don't have tool calling functionality a tool calling agent will be provided. Detail the tool call, the reason you need that tool call, as well as all parameters by name and the values you want. Put it in a newline delimeted block with a TOOL CALL header. The agent will turn your message into a set of tool calls and return the results to you.
 
 **PREFERRED FILE TOOLS:**
 - `read_file`: Read file contents or specific line ranges. Use this instead of `cat`, `head`, `tail`, or `less`.
@@ -56,7 +56,7 @@ pub async fn chat_mode(
 
     static DEFAULT_SYS_AGENT_PROMPT: &str = r#"You are working in the current directory, which is a codebase. Your role is to efficiently manage files and run commands. Here are your instructions:
 
-1. **Use Dedicated File Tools**: ALWAYS use read_file for reading files and write_file for modifications. These tools are more reliable than shell commands for file operations.
+1. **Use Dedicated File Tools**: ALWAYS use read_file for reading files and write_file for modifications. These tools are more reliable than shell commands for file operations. Instruct a tool calling agent if you don't know how to call tools yourself.
 
 2. **Focus on Specific Files and Lines**: Use read_file with line ranges to examine specific parts of files. Use write_file with insert/replace modes for targeted changes.
 
@@ -122,7 +122,12 @@ By following these instructions, you will efficiently manage the codebase with p
             }
         }
         if !temp_tool_calls.is_empty() {
-            let tool_messages = process_tool_calls(&mut rl, &app_config, &temp_tool_calls);
+            let mut tool_messages = process_tool_calls(&mut rl, &app_config, &temp_tool_calls);
+            //If the model is not tool capable then turn these into user messages
+            if !app_config.models.get(app_state.model.as_str()).map(|m|m.tools).unwrap_or_default(){
+                println!("Modifying role for tools");
+                tool_messages.iter_mut().for_each(|m| m.role = "user".to_string());
+            }
             app_state.messages.extend(tool_messages);
             continue;
         }
@@ -180,13 +185,8 @@ By following these instructions, you will efficiently manage the codebase with p
             }
 
             if input == "/tools" {
-                //TODO Some models are not tool enabled. If we have a specific agentic tool enabled model
-                //like function_gemma we can send the context to that model with specific sys prompt asking
-                //it to review the agent response and see if any tool calls can be pulled out of it.
-                //The response will then be appended to the last agent response and things will
-                //continue from that point.
-                todo!()
-                //continue;
+                app_state.get_tool_calls(&client, &app_config).await?;
+                continue;
             }
 
             if input == "/reset" {

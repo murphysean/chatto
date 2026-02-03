@@ -201,12 +201,13 @@ impl ApplicationState {
             model: self.model.clone(),
             messages,
             tools: None,
-            options: config
-                .models
-                .get(self.model.as_str())
-                .as_ref()
-                //TODO Need to account for an empty num_ctx
-                .map(|c| json!({"num_ctx":c.num_ctx.unwrap()})),
+            options: config.models.get(self.model.as_str()).as_ref().map(|c| {
+                if c.num_ctx.is_some() {
+                    json!({"num_ctx":c.num_ctx.unwrap()})
+                } else {
+                    Value::Null
+                }
+            }),
             stream: false,
             think: false,
         };
@@ -225,6 +226,74 @@ impl ApplicationState {
             tool_call_id: None,
             tool_name: None,
         });
+        Ok(())
+    }
+
+    /// Will call a specialized model like functiongemma with the last user and assistant message
+    /// to see if any tool calls can be extracted given the set of available tools.
+    pub async fn get_tool_calls(
+        &mut self,
+        client: &Client,
+        config: &ApplicationConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut messages: Vec<OllamaChatMessage> = Vec::new();
+        messages.push(OllamaChatMessage {
+            role: "system".to_string(),
+            content: "Review the given conversation snippet and identify if there are any tool calls you can make based on the user message, or the assistant response. If the assistant gives a code snippet, try to write that to the file. If a shell command is included, try to run that. If the model needs to read contents of a file, do that. If a search is warranted, run grep or find.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        });
+        let mut content: String = String::new();
+        /*
+        //The last user message
+        if let Some(i) = self.messages.iter().rposition(|m| m.role == "user") {
+            content.push_str(format!("user: {}\n", self.messages.get(i).unwrap().content).as_str());
+        }*/
+        //The last assistant message
+        if let Some(i) = self.messages.iter().rposition(|m| m.role == "assistant") {
+            content.push_str(
+                format!("assistant: {}\n", self.messages.get(i).unwrap().content).as_str(),
+            );
+        }
+        messages.push(OllamaChatMessage {
+            role: "user".to_string(),
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        });
+        let request: OllamaChatRequest = OllamaChatRequest {
+            model: "functiongemma".to_string(),
+            messages,
+            tools: Some(self.tools.clone()),
+            options: config.models.get("functiongemma").as_ref().map(|m| {
+                if m.num_ctx.is_some() {
+                    json!({"num_ctx":m.num_ctx.unwrap()})
+                } else {
+                    Value::Null
+                }
+            }),
+            stream: false,
+            think: false,
+        };
+        let (response, _) = post_ollama_chat(
+            client,
+            &config.url,
+            &request,
+            Option::<&mut ApplicationState>::None,
+        )
+        .await?;
+
+        if let Some(message) = response.message {
+            self.messages.push(OllamaChatMessage {
+                role: "user".to_string(),
+                content: message.content.clone(),
+                tool_calls: message.tool_calls.clone(),
+                tool_call_id: None,
+                tool_name: None,
+            });
+        }
         Ok(())
     }
 
