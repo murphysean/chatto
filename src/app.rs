@@ -210,7 +210,6 @@ impl ApplicationState {
             stream: false,
             think: false,
         };
-        println!("Sending {:?}", &request);
         let (response, _) = post_ollama_chat(
             client,
             &config.url,
@@ -218,7 +217,6 @@ impl ApplicationState {
             Option::<&mut ApplicationState>::None,
         )
         .await?;
-        println!("Got {:?}", &response);
         self.messages.truncate(1);
         self.messages.push(OllamaChatMessage {
             role: "user".to_string(),
@@ -227,7 +225,6 @@ impl ApplicationState {
             tool_call_id: None,
             tool_name: None,
         });
-        println!("Result Messages Now: {:?}", self.messages);
         Ok(())
     }
 
