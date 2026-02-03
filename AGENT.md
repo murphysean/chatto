@@ -7,7 +7,8 @@
 - `src/main.rs` - Entry point with CLI argument parsing
 - `src/ollama.rs` - Core chat functionality and Ollama API integration
 - `src/tools.rs` - Contains functionality for some of the built in agentic tools like shell command, read/write files
-- `src/session.rs` - Allows saving a session to disk, reading it back out for persistant chat sessions
+- `src/app.rs` - The application, stores app state and config. All methods for display and prompt are done here.
+- `src/chat.rs` - Implementation of the chat cli command.
 - Uses `.chatto.yaml` configuration file in user's home directory
 - Built with async/await pattern using tokio
 

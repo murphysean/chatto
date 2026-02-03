@@ -1,10 +1,11 @@
 use std::io::Write;
 use std::{fs, io, path::Path};
 
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::ollama::{OllamaChatRequest, StreamingChatHandler};
+use crate::ollama::{post_ollama_chat, OllamaChatRequest, StreamingChatHandler};
 use crate::{
     ollama::{OllamaChatMessage, OllamaChatResponse, OllamaChatResponseStreamingState},
     ApplicationConfig, ModelConfig,
@@ -35,33 +36,57 @@ impl StreamingChatHandler for &mut ApplicationState {
     fn process_streaming_response(
         &mut self,
         previous_streaming_state: &OllamaChatResponseStreamingState,
-        _current_streaming_state: &OllamaChatResponseStreamingState,
+        current_streaming_state: &OllamaChatResponseStreamingState,
         response: &OllamaChatResponse,
     ) {
         if let Some(message) = &response.message {
             if let Some(thinking) = &message.thinking {
                 //If it's a thought chunk, just send it to console
                 if !thinking.is_empty() {
-                    if let OllamaChatResponseStreamingState::Recieving = previous_streaming_state {
+                    if matches!(
+                        previous_streaming_state,
+                        OllamaChatResponseStreamingState::Receiving
+                    ) && matches!(
+                        current_streaming_state,
+                        OllamaChatResponseStreamingState::Thinking
+                    ) {
                         println!("Assistant Thinking...")
                     }
                     print!("\x1b[90m{}\x1b[0m", thinking);
                     io::stdout().flush().unwrap_or_default();
+                    return;
                 }
             }
             //Regular messages get saved into the last message
             if !message.content.is_empty() {
-                if let OllamaChatResponseStreamingState::Thinking = previous_streaming_state {
-                    println!("\nAssistant:")
+                if matches!(
+                    previous_streaming_state,
+                    OllamaChatResponseStreamingState::Receiving
+                        | OllamaChatResponseStreamingState::Thinking
+                ) && matches!(
+                    current_streaming_state,
+                    OllamaChatResponseStreamingState::Responding
+                ) {
+                    println!("\nAssistant:");
                 }
                 print!("{}", message.content);
                 io::stdout().flush().unwrap_or_default();
+                return;
             }
             //Tool calls will come through here as well
-            if message.tool_calls.is_some() {
-                if let OllamaChatResponseStreamingState::Responding = previous_streaming_state {
-                    println!("\nTool Call(s)...")
-                }
+            if message.tool_calls.is_some()
+                && matches!(
+                    previous_streaming_state,
+                    OllamaChatResponseStreamingState::Receiving
+                        | OllamaChatResponseStreamingState::Thinking
+                        | OllamaChatResponseStreamingState::Responding
+                )
+                && matches!(
+                    current_streaming_state,
+                    OllamaChatResponseStreamingState::CallingTools
+                )
+            {
+                println!("\nTool Call(s)...");
             }
         }
     }
@@ -103,14 +128,107 @@ impl ApplicationState {
     /// A simple compact will keep the system message, and only the last assistant message. All
     /// tool calls and previous user messages will be deleted.
     pub fn trim(&mut self) {
-        todo!()
+        let mut new_messages: Vec<OllamaChatMessage> = Vec::new();
+        //All System messages
+        new_messages.extend(self.messages.iter().filter(|m| m.role == "system").cloned());
+        //The last user message
+        if let Some(i) = self.messages.iter().rposition(|m| m.role == "user") {
+            new_messages.push(self.messages.get(i).unwrap().clone());
+        }
+        //The last assistant message
+        if let Some(i) = self.messages.iter().rposition(|m| m.role == "assistant") {
+            new_messages.push(self.messages.get(i).unwrap().clone());
+        }
+        self.messages = new_messages;
     }
 
     /// A summary compact will keep the system message. It will send all previous user,
     /// assistant, and tool messages to a model with instructions to summarize the messages into a
     /// single paragraph-ish length message.
-    pub fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        todo!()
+    pub async fn compact(
+        &mut self,
+        client: &Client,
+        config: &ApplicationConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut messages: Vec<OllamaChatMessage> = Vec::new();
+        messages.push(OllamaChatMessage {
+            role: "system".to_string(),
+            content: "Summarize the chat into a single paragraph that will give the agent sufficient context to continue the conversation but reduce the context. Please summarize tool calls and tool results as well as the user and assistant messages. Include a header for your messages that clarifies it is a summary.".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        });
+        let mut content: String = String::new();
+        self.messages.iter().skip(1).for_each(|m| {
+            if m.role == "tool" {
+                content.push_str(
+                    format!(
+                        "{}, id: {}, name: {}:\n--- {}\n",
+                        m.role,
+                        m.tool_call_id.clone().unwrap_or_default(),
+                        m.tool_name.clone().unwrap_or_default(),
+                        m.content
+                    )
+                    .as_str(),
+                );
+            } else {
+                content.push_str(format!("{}:\n--- {}\n", m.role, m.content).as_str());
+            }
+            if m.tool_calls.is_some() {
+                m.tool_calls.as_ref().unwrap().iter().for_each(|tc| {
+                    content.push_str(
+                        format!("Tool Call {}:\n", tc.id.clone().unwrap_or_default()).as_str(),
+                    );
+                    content.push_str(
+                        format!(
+                            "\tname: {}\n\targuments: {}\n",
+                            tc.function.name, tc.function.arguments
+                        )
+                        .as_str(),
+                    );
+                });
+            }
+            content.push_str("---\n");
+        });
+        messages.push(OllamaChatMessage {
+            role: "user".to_string(),
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        });
+        let request: OllamaChatRequest = OllamaChatRequest {
+            model: self.model.clone(),
+            messages,
+            tools: None,
+            options: config
+                .models
+                .get(self.model.as_str())
+                .as_ref()
+                //TODO Need to account for an empty num_ctx
+                .map(|c| json!({"num_ctx":c.num_ctx.unwrap()})),
+            stream: false,
+            think: false,
+        };
+        println!("Sending {:?}", &request);
+        let (response, _) = post_ollama_chat(
+            client,
+            &config.url,
+            &request,
+            Option::<&mut ApplicationState>::None,
+        )
+        .await?;
+        println!("Got {:?}", &response);
+        self.messages.truncate(1);
+        self.messages.push(OllamaChatMessage {
+            role: "user".to_string(),
+            content: response.message.unwrap_or_default().content,
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+        });
+        println!("Result Messages Now: {:?}", self.messages);
+        Ok(())
     }
 
     pub fn model_configuration(&self, app_config: &ApplicationConfig) -> ModelConfig {
@@ -131,28 +249,10 @@ impl ApplicationState {
         self.messages.push(message);
     }
 
-    pub fn add_assistant_message(&mut self, content: &str) {
-        let message = OllamaChatMessage {
-            role: "assistant".to_string(),
-            content: content.to_string(),
-            tool_calls: None,
-            tool_name: None,
-            tool_call_id: None,
-        };
-        self.messages.push(message);
-    }
-
-    pub fn add_assistant_response(&mut self, resp: OllamaChatResponse) {
-        if let Some(message) = resp.message {
-            let new_message = OllamaChatMessage {
-                role: message.role,
-                content: message.content.clone(),
-                tool_calls: message.tool_calls.clone(),
-                tool_name: None,
-                tool_call_id: None,
-            };
-            self.messages.push(new_message);
-            if let Some(thinking) = message.thinking {
+    /// Will Print out the response contents for the user
+    pub fn print_assistant_response(&self, resp: &OllamaChatResponse) {
+        if let Some(message) = &resp.message {
+            if let Some(thinking) = &message.thinking {
                 if !thinking.is_empty() {
                     println!("Assistant Thought:\n\x1b[90m{}\x1b[0m", thinking);
                 }
@@ -163,6 +263,20 @@ impl ApplicationState {
             if message.tool_calls.is_some() {
                 println!("Assistant Requests Tool Call(s)");
             }
+        }
+    }
+
+    /// Will convert the response into a chat message and store it in the messages vec
+    pub fn add_assistant_response(&mut self, resp: OllamaChatResponse) {
+        if let Some(message) = resp.message {
+            let new_message = OllamaChatMessage {
+                role: "assistant".to_string(),
+                content: message.content.clone(),
+                tool_calls: message.tool_calls.clone(),
+                tool_name: None,
+                tool_call_id: None,
+            };
+            self.messages.push(new_message);
         }
     }
 

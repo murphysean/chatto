@@ -7,7 +7,10 @@ use tempfile::NamedTempFile;
 
 use crate::{
     app::ApplicationState,
-    ollama::{post_ollama_chat, OllamaChatMessage, OllamaChatRequest, ToolCall},
+    ollama::{
+        post_ollama_chat, OllamaChatMessage, OllamaChatRequest, OllamaChatResponseStreamingState,
+        ToolCall,
+    },
     tools::{
         create_read_file_tool, create_shell_tool, create_write_file_tool, execute_command,
         read_file_lines, show_write_diff, write_file_content,
@@ -101,14 +104,6 @@ By following these instructions, you will efficiently manage the codebase with p
             tool_name: None,
             tool_call_id: None,
         });
-    } else {
-        app_state.messages.insert(1, OllamaChatMessage {
-            role: "system".to_string(),
-            content: "REMINDER: You have access to execute_shell, read_file, and write_file tools. Use them to run commands and manage files.".to_string(),
-            tool_calls: None,
-                tool_name: None,
-            tool_call_id: None,
-        });
     }
 
     println!("Ollama URL: {}...", app_config.url);
@@ -129,6 +124,7 @@ By following these instructions, you will efficiently manage the codebase with p
         if !temp_tool_calls.is_empty() {
             let tool_messages = process_tool_calls(&mut rl, &app_config, &temp_tool_calls);
             app_state.messages.extend(tool_messages);
+            continue;
         }
 
         //Prompt user for a message
@@ -204,7 +200,7 @@ By following these instructions, you will efficiently manage the codebase with p
             }
 
             if input == "/compact" {
-                app_state.compact()?;
+                app_state.compact(&client, &app_config).await?;
                 continue;
             }
 
@@ -236,8 +232,15 @@ By following these instructions, you will efficiently manage the codebase with p
                 request.options = Some(json!({"num_ctx":model_config.num_ctx.unwrap()}));
             }
         }
-        match post_ollama_chat(&client, app_config.url.as_str(), &request, Some(&mut app_state)).await {
-            Ok(response) => {
+        match post_ollama_chat(
+            &client,
+            app_config.url.as_str(),
+            &request,
+            Some(&mut app_state),
+        )
+        .await
+        {
+            Ok((response, streaming_state)) => {
                 //Assume this is the last of the streaming messages, it's marked done
                 println!(
                     "\nAssistant Finished... Prompt: {}, Eval: {}, Dur: {}",
@@ -245,6 +248,11 @@ By following these instructions, you will efficiently manage the codebase with p
                     response.eval_count.unwrap_or_default(),
                     response.total_duration.unwrap_or_default()
                 );
+                if matches!(streaming_state, OllamaChatResponseStreamingState::NoStream) {
+                    app_state.print_assistant_response(&response);
+                }
+                //Add the response to messages
+                app_state.add_assistant_response(response);
             }
             Err(e) => {
                 eprintln!("❌ API Error: {}", e);

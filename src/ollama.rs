@@ -91,6 +91,7 @@ pub struct OllamaChatResponse {
 
 impl OllamaChatResponse {
     fn merge(&mut self, incoming: &OllamaChatResponse) -> OllamaChatResponseStreamingState {
+        let mut ret: Option<OllamaChatResponseStreamingState> = None;
         self.model = incoming.model.clone();
         self.created_at = incoming.created_at.clone();
         if let Some(message) = &incoming.message {
@@ -109,7 +110,7 @@ impl OllamaChatResponse {
                     .as_mut()
                     .unwrap()
                     .push_str(thinking);
-                return OllamaChatResponseStreamingState::Thinking;
+                ret = Some(OllamaChatResponseStreamingState::Thinking);
             }
             if !message.content.is_empty() {
                 self.message
@@ -117,7 +118,7 @@ impl OllamaChatResponse {
                     .unwrap()
                     .content
                     .push_str(&message.content);
-                return OllamaChatResponseStreamingState::Responding;
+                ret = Some(OllamaChatResponseStreamingState::Responding);
             }
             if let Some(tool_calls) = &message.tool_calls {
                 if self.message.as_ref().unwrap().tool_calls.is_none() {
@@ -130,10 +131,13 @@ impl OllamaChatResponse {
                     .as_mut()
                     .unwrap()
                     .extend(tool_calls.iter().cloned());
-                return OllamaChatResponseStreamingState::CallingTools;
+                ret = Some(OllamaChatResponseStreamingState::CallingTools);
             }
         }
         self.done = incoming.done;
+        if self.done {
+            ret = Some(OllamaChatResponseStreamingState::Done)
+        }
         self.done_reason = incoming.done_reason.clone();
 
         self.total_duration = incoming.total_duration;
@@ -143,7 +147,11 @@ impl OllamaChatResponse {
         self.eval_count = incoming.eval_count;
         self.eval_duration = incoming.eval_duration;
 
-        OllamaChatResponseStreamingState::Done
+        if let Some(state) = ret {
+            state
+        } else {
+            OllamaChatResponseStreamingState::Receiving
+        }
     }
 }
 
@@ -161,9 +169,10 @@ pub struct ToolCallFunction {
     pub arguments: Value,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum OllamaChatResponseStreamingState {
-    Recieving,
+    NoStream,
+    Receiving,
     Thinking,
     Responding,
     CallingTools,
@@ -184,7 +193,7 @@ pub async fn post_ollama_chat(
     url: &str,
     request: &OllamaChatRequest,
     mut streaming_chat_handler: Option<impl StreamingChatHandler>,
-) -> Result<OllamaChatResponse, Box<dyn Error>> {
+) -> Result<(OllamaChatResponse, OllamaChatResponseStreamingState), Box<dyn Error>> {
     let response = client
         .post(format!("{}/api/chat", url))
         .json(&request)
@@ -201,6 +210,8 @@ pub async fn post_ollama_chat(
         return Err(format!("API Error: Status: {}: {}", status, error_text).into());
     }
 
+    println!("{:?}", response.headers().get("Content-Type"));
+
     // Check content type
     if response
         .headers()
@@ -209,17 +220,17 @@ pub async fn post_ollama_chat(
         == Some("application/json")
     {
         let body: OllamaChatResponse = response.json().await?;
-        return Ok(body);
+        return Ok((body, OllamaChatResponseStreamingState::NoStream));
     }
 
     let mut stream = response.bytes_stream();
 
+    let mut streaming_state: OllamaChatResponseStreamingState =
+        OllamaChatResponseStreamingState::Receiving;
+    let mut ollama_response: OllamaChatResponse = OllamaChatResponse::default();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("Stream chunk error: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
-        let mut streaming_state: OllamaChatResponseStreamingState =
-            OllamaChatResponseStreamingState::Recieving;
-        let mut ollama_response: OllamaChatResponse = OllamaChatResponse::default();
 
         for line in chunk_str.lines() {
             if line.trim().is_empty() {
@@ -236,8 +247,8 @@ pub async fn post_ollama_chat(
                             &response_chunk,
                         );
                     }
-                    if let OllamaChatResponseStreamingState::Done = streaming_state {
-                        return Ok(ollama_response);
+                    if let OllamaChatResponseStreamingState::Done = &streaming_state {
+                        return Ok((ollama_response, streaming_state));
                     }
                 }
                 Err(e) => {
