@@ -22,6 +22,8 @@ struct Cli {
     ///The model to be used on the ollama instance eg. gemma3:12b or llama2
     #[arg(short, long)]
     model: Option<String>,
+    #[arg(short, long, env = "OLLAMA_API_KEY")]
+    key: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -37,6 +39,7 @@ enum Commands {
 #[derive(Debug, Deserialize)]
 pub struct ApplicationConfig {
     url: String,
+    api_key: String,
     model: String,
     stream: bool,
     output_limit: OutputLimit,
@@ -78,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .required(false),
         )
         .set_override_option("url", cli.url)?
+        .set_override_option("api_key", cli.key)?
         .set_override_option("model", cli.model)?
         .build()?
         .try_deserialize()?;

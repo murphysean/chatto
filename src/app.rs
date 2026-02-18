@@ -174,8 +174,8 @@ impl ApplicationState {
             } else {
                 content.push_str(format!("{}:\n--- {}\n", m.role, m.content).as_str());
             }
-            if m.tool_calls.is_some() {
-                m.tool_calls.as_ref().unwrap().iter().for_each(|tc| {
+            if let Some(tool_calls) = &m.tool_calls {
+                tool_calls.iter().for_each(|tc| {
                     content.push_str(
                         format!("Tool Call {}:\n", tc.id.clone().unwrap_or_default()).as_str(),
                     );
@@ -202,8 +202,8 @@ impl ApplicationState {
             messages,
             tools: None,
             options: config.models.get(self.model.as_str()).as_ref().map(|c| {
-                if c.num_ctx.is_some() {
-                    json!({"num_ctx":c.num_ctx.unwrap()})
+                if let Some(num_ctx) = c.num_ctx {
+                    json!({"num_ctx": num_ctx})
                 } else {
                     Value::Null
                 }
@@ -214,6 +214,7 @@ impl ApplicationState {
         let (response, _) = post_ollama_chat(
             client,
             &config.url,
+            &config.api_key,
             &request,
             Option::<&mut ApplicationState>::None,
         )
@@ -268,8 +269,8 @@ impl ApplicationState {
             messages,
             tools: Some(self.tools.clone()),
             options: config.models.get("functiongemma").as_ref().map(|m| {
-                if m.num_ctx.is_some() {
-                    json!({"num_ctx":m.num_ctx.unwrap()})
+                if let Some(num_ctx) = m.num_ctx {
+                    json!({"num_ctx": num_ctx})
                 } else {
                     Value::Null
                 }
@@ -280,6 +281,7 @@ impl ApplicationState {
         let (response, _) = post_ollama_chat(
             client,
             &config.url,
+            &config.api_key,
             &request,
             Option::<&mut ApplicationState>::None,
         )

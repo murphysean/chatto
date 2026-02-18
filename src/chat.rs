@@ -79,12 +79,11 @@ pub async fn chat_mode(
 By following these instructions, you will efficiently manage the codebase with precise file operations and minimal context growth.
 "#;
     let model_config = app_state.model_configuration(&app_config);
+    let mut sys_content = DEFAULT_SYS_AGENT_PROMPT.to_string();
 
-    let mut sys_content: String = if model_config.system_prompt.is_some() {
-        model_config.system_prompt.unwrap()
-    } else {
-        DEFAULT_SYS_AGENT_PROMPT.to_string()
-    };
+    if let Some(system_prompt) = model_config.system_prompt {
+        sys_content = system_prompt;
+    }
 
     // Add AGENT.md context if available
     if let Some(agent_context) = load_agent_context() {
@@ -124,9 +123,16 @@ By following these instructions, you will efficiently manage the codebase with p
         if !temp_tool_calls.is_empty() {
             let mut tool_messages = process_tool_calls(&mut rl, &app_config, &temp_tool_calls);
             //If the model is not tool capable then turn these into user messages
-            if !app_config.models.get(app_state.model.as_str()).map(|m|m.tools).unwrap_or_default(){
+            if !app_config
+                .models
+                .get(app_state.model.as_str())
+                .map(|m| m.tools)
+                .unwrap_or_default()
+            {
                 println!("Modifying role for tools");
-                tool_messages.iter_mut().for_each(|m| m.role = "user".to_string());
+                tool_messages
+                    .iter_mut()
+                    .for_each(|m| m.role = "user".to_string());
             }
             app_state.messages.extend(tool_messages);
             continue;
@@ -228,13 +234,14 @@ By following these instructions, you will efficiently manage the codebase with p
             if !model_config.tools {
                 request.tools = None;
             }
-            if model_config.num_ctx.is_some() {
-                request.options = Some(json!({"num_ctx":model_config.num_ctx.unwrap()}));
+            if let Some(num_ctx) = model_config.num_ctx {
+                request.options = Some(json!({"num_ctx":num_ctx}));
             }
         }
         match post_ollama_chat(
             &client,
             app_config.url.as_str(),
+            app_config.api_key.as_str(),
             &request,
             Some(&mut app_state),
         )

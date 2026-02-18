@@ -191,11 +191,13 @@ pub trait StreamingChatHandler {
 pub async fn post_ollama_chat(
     client: &Client,
     url: &str,
+    key: &str,
     request: &OllamaChatRequest,
     mut streaming_chat_handler: Option<impl StreamingChatHandler>,
 ) -> Result<(OllamaChatResponse, OllamaChatResponseStreamingState), Box<dyn Error>> {
     let response = client
         .post(format!("{}/api/chat", url))
+        .header("Authorization", format!("Bearer {}", key))
         .json(&request)
         .send()
         .await
@@ -211,11 +213,12 @@ pub async fn post_ollama_chat(
     }
 
     // Check content type
-    if response
-        .headers()
-        .get("Content-Type")
-        .map(|cthv| cthv.to_str().unwrap_or_default())
-        == Some("application/json")
+    if !request.stream
+        && response
+            .headers()
+            .get("Content-Type")
+            .map(|cthv| cthv.to_str().unwrap_or_default())
+            == Some("application/json")
     {
         let body: OllamaChatResponse = response.json().await?;
         return Ok((body, OllamaChatResponseStreamingState::NoStream));
