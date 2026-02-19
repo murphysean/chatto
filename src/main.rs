@@ -57,7 +57,6 @@ impl ApplicationConfig {
     }
 
     pub fn merge_model(&mut self, model: OllamaModel) {
-        println!("MERGING {:?}", model);
         let found = self.models.iter().any(|m| m.name == model.name);
         if !found {
             println!("PUSHED");
@@ -66,8 +65,6 @@ impl ApplicationConfig {
         }
         for m in self.models.iter_mut() {
             if m.name == model.name {
-                println!("FOUND");
-
                 m.capabilities = model.capabilities;
                 m.model_info = model.model_info;
                 break;
@@ -109,7 +106,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
     let mut app_config: ApplicationConfig = config_builder.build()?.try_deserialize()?;
     //Pull down the model config from the server
-    println!("Fetching Model Info...");
     let model_info = show_model(
         &client,
         &app_config.url,
@@ -117,7 +113,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &app_config.model,
     )
     .await?;
-    println!("Model Info {:?}", &model_info);
     app_config.merge_model(model_info);
 
     match cli.command {
