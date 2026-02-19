@@ -1,10 +1,17 @@
 use std::{collections::HashMap, error::Error};
 
+use futures::AsyncBufReadExt;
+use futures::TryStreamExt;
+use futures_util::io::BufReader;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Request structure for the Ollama chat API.
+///
+/// This struct represents the data sent to Ollama when making a chat request,
+/// including the model to use, messages, tools, options, and streaming preferences.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct OllamaChatRequest {
     pub model: String,
@@ -236,38 +243,38 @@ pub async fn post_ollama_chat(
         return Ok((body, OllamaChatResponseStreamingState::NoStream));
     }
 
-    let mut stream = response.bytes_stream();
+    let reader = BufReader::new(
+        response
+            .bytes_stream()
+            .map_err(futures::io::Error::other)
+            .into_async_read(),
+    );
 
     let mut streaming_state: OllamaChatResponseStreamingState =
         OllamaChatResponseStreamingState::Receiving;
     let mut ollama_response: OllamaChatResponse = OllamaChatResponse::default();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Stream chunk error: {}", e))?;
-        let chunk_str = String::from_utf8_lossy(&chunk);
 
-        for line in chunk_str.lines() {
-            if line.trim().is_empty() {
-                continue;
+    let mut lines = reader.lines();
+    while let Some(line) = lines.next().await {
+        let line = line.map_err(|e| format!("Stream line error: {}", e))?;
+        match serde_json::from_str::<OllamaChatResponse>(&line) {
+            Ok(response_chunk) => {
+                let prev_streaming_state = streaming_state;
+                streaming_state = ollama_response.merge(&response_chunk);
+                if let Some(streaming_chat_handler) = streaming_chat_handler.as_mut() {
+                    streaming_chat_handler.process_streaming_response(
+                        &prev_streaming_state,
+                        &streaming_state,
+                        &response_chunk,
+                    );
+                }
+                if let OllamaChatResponseStreamingState::Done = &streaming_state {
+                    return Ok((ollama_response, streaming_state));
+                }
             }
-            match serde_json::from_str::<OllamaChatResponse>(line) {
-                Ok(response_chunk) => {
-                    let prev_streaming_state = streaming_state;
-                    streaming_state = ollama_response.merge(&response_chunk);
-                    if let Some(streaming_chat_handler) = streaming_chat_handler.as_mut() {
-                        streaming_chat_handler.process_streaming_response(
-                            &prev_streaming_state,
-                            &streaming_state,
-                            &response_chunk,
-                        );
-                    }
-                    if let OllamaChatResponseStreamingState::Done = &streaming_state {
-                        return Ok((ollama_response, streaming_state));
-                    }
-                }
-                Err(e) => {
-                    println!("{line}");
-                    return Err(format!("JSON Error: {}", e).into());
-                }
+            Err(e) => {
+                println!("{line}");
+                return Err(format!("JSON Error: {}", e).into());
             }
         }
     }

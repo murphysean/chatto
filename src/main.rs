@@ -34,6 +34,8 @@ enum Commands {
     List,
     Chat {
         #[arg(short, long)]
+        disable_streaming: bool,
+        #[arg(short, long)]
         session: Option<String>,
     },
 }
@@ -59,7 +61,6 @@ impl ApplicationConfig {
     pub fn merge_model(&mut self, model: OllamaModel) {
         let found = self.models.iter().any(|m| m.name == model.name);
         if !found {
-            println!("PUSHED");
             self.models.push(model);
             return;
         }
@@ -132,7 +133,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Commands::Chat { session } => {
+        Commands::Chat {
+            disable_streaming,
+            session,
+        } => {
+            if disable_streaming {
+                app_config.stream = false;
+            }
             chat_mode(&client, app_config, session).await?;
         }
     }

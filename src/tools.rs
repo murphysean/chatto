@@ -218,7 +218,10 @@ pub fn read_file_lines(path: &str, start_line: Option<usize>, end_line: Option<u
 
     let lines: Vec<&str> = content.lines().collect();
     let start = start_line.unwrap_or(1).saturating_sub(1); // Convert 1-based to 0-based
-    let end = end_line.unwrap_or(lines.len()).min(lines.len()); // end_line is 1-based, but slicing is exclusive, so we use it directly
+    let end = end_line
+        .unwrap_or(lines.len())
+        .saturating_sub(1)
+        .min(lines.len()); // Convert 1-based to 0-based
 
     if start >= lines.len() {
         return "Start line exceeds file length".to_string();
@@ -365,8 +368,11 @@ pub fn write_file_content(
                 Err(e) => return format!("Error reading file: {}", e),
             };
             let mut lines: Vec<&str> = existing.lines().collect();
-            let start = start_line.unwrap_or(1).saturating_sub(1);
-            let end = end_line.unwrap_or(start + 1).min(lines.len());
+            let start = start_line.unwrap_or(1).saturating_sub(1); // Convert 1-based to 0-based
+            let end = end_line
+                .unwrap_or(lines.len())
+                .saturating_sub(1)
+                .min(lines.len()); // Convert 1-based to 0-based
 
             if start < lines.len() {
                 lines.splice(start..end, content.lines());
