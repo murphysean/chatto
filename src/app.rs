@@ -1,3 +1,9 @@
+//! Application state management and chat message handling.
+//!
+//! This module contains the core application state for chat sessions,
+//! including message history, tool definitions, and session persistence.
+//! It implements the streaming chat handler for real-time response display.
+
 use std::io::Write;
 use std::{fs, io, path::Path};
 
@@ -11,11 +17,19 @@ use crate::{
     ApplicationConfig,
 };
 
+/// Application state for a chat session
+///
+/// Maintains the conversation history, tool definitions, and session metadata.
+/// Can be serialized/deserialized for session persistence.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ApplicationState {
+    /// Unique identifier for this session
     pub session_id: String,
+    /// Model name being used for this session
     pub model: String,
+    /// Available tools for the model to use
     pub tools: Vec<Value>,
+    /// Conversation history
     pub messages: Vec<OllamaChatMessage>,
 }
 
@@ -93,6 +107,13 @@ impl StreamingChatHandler for &mut ApplicationState {
 }
 
 impl ApplicationState {
+    /// Creates a new application state from configuration
+    ///
+    /// # Arguments
+    /// * `app_config` - Application configuration to initialize from
+    ///
+    /// # Returns
+    /// New ApplicationState with empty message history
     pub fn new_from_config(app_config: &ApplicationConfig) -> Self {
         Self {
             session_id: String::default(),
@@ -102,6 +123,17 @@ impl ApplicationState {
         }
     }
 
+    /// Loads a session from disk or creates a new one if it doesn't exist
+    ///
+    /// # Arguments
+    /// * `session_name` - Name of the session to load
+    /// * `app_config` - Application configuration for new session creation
+    ///
+    /// # Returns
+    /// Loaded or newly created ApplicationState
+    ///
+    /// # Errors
+    /// Returns error if session file exists but cannot be read or parsed
     pub fn load_session(
         session_name: &str,
         app_config: &ApplicationConfig,
@@ -118,6 +150,13 @@ impl ApplicationState {
         }
     }
 
+    /// Saves the current session to disk
+    ///
+    /// # Arguments
+    /// * `session_name` - Name for the session file
+    ///
+    /// # Errors
+    /// Returns error if file cannot be written
     pub fn save_session(&self, session_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let filename = format!(".chatto-{}.session.yaml", session_name);
         let yaml_content = serde_yaml::to_string(&self)?;
@@ -125,8 +164,11 @@ impl ApplicationState {
         Ok(())
     }
 
-    /// A simple compact will keep the system message, and only the last assistant message. All
-    /// tool calls and previous user messages will be deleted.
+    /// Trims message history to keep only essential messages
+    ///
+    /// Keeps system message, last user message, and last assistant message.
+    /// All tool calls and previous messages are removed.
+    /// Useful for reducing context size while maintaining conversation continuity.
     pub fn trim(&mut self) {
         let mut new_messages: Vec<OllamaChatMessage> = Vec::new();
         //All System messages
@@ -142,9 +184,21 @@ impl ApplicationState {
         self.messages = new_messages;
     }
 
-    /// A summary compact will keep the system message. It will send all previous user,
-    /// assistant, and tool messages to a model with instructions to summarize the messages into a
-    /// single paragraph-ish length message.
+    /// Compacts message history by summarizing previous messages
+    ///
+    /// Sends all messages (except system) to the model for summarization.
+    /// The summary replaces the message history, keeping context small
+    /// while preserving conversation continuity.
+    ///
+    /// # Arguments
+    /// * `client` - HTTP client for API requests
+    /// * `config` - Application configuration
+    ///
+    /// # Returns
+    /// Result indicating success or failure of compaction
+    ///
+    /// # Errors
+    /// Returns error if summarization request fails
     pub async fn compact(
         &mut self,
         client: &Client,
@@ -226,8 +280,20 @@ impl ApplicationState {
         Ok(())
     }
 
-    /// Will call a specialized model like functiongemma with the last user and assistant message
-    /// to see if any tool calls can be extracted given the set of available tools.
+    /// Extracts tool calls from conversation using a specialized model
+    ///
+    /// Uses 'functiongemma' model to analyze the last user/assistant messages
+    /// and identify potential tool calls based on available tools.
+    ///
+    /// # Arguments
+    /// * `client` - HTTP client for API requests
+    /// * `config` - Application configuration
+    ///
+    /// # Returns
+    /// Result indicating success or failure
+    ///
+    /// # Errors
+    /// Returns error if tool extraction request fails
     pub async fn get_tool_calls(
         &mut self,
         client: &Client,
@@ -291,6 +357,10 @@ impl ApplicationState {
         Ok(())
     }
 
+    /// Adds a user message to the conversation history
+    ///
+    /// # Arguments
+    /// * `content` - The message content from the user
     pub fn add_user_message(&mut self, content: &str) {
         let message = OllamaChatMessage {
             role: "user".to_string(),
@@ -302,7 +372,12 @@ impl ApplicationState {
         self.messages.push(message);
     }
 
-    /// Will Print out the response contents for the user
+    /// Prints the assistant response to console with formatting
+    ///
+    /// Displays thinking (in gray), content, and tool call indicators
+    ///
+    /// # Arguments
+    /// * `resp` - The response to print
     pub fn print_assistant_response(&self, resp: &OllamaChatResponse) {
         if let Some(message) = &resp.message {
             if let Some(thinking) = &message.thinking {
@@ -320,6 +395,10 @@ impl ApplicationState {
     }
 
     /// Will convert the response into a chat message and store it in the messages vec
+    /// Adds an assistant response to the conversation history
+    ///
+    /// # Arguments
+    /// * `resp` - The response to add to history
     pub fn add_assistant_response(&mut self, resp: OllamaChatResponse) {
         if let Some(message) = resp.message {
             let new_message = OllamaChatMessage {
@@ -333,6 +412,12 @@ impl ApplicationState {
         }
     }
 
+    /// Adds a tool result message to the conversation history
+    ///
+    /// # Arguments
+    /// * `tool_call_id` - ID of the tool call this result is for
+    /// * `tool_name` - Name of the tool that was executed
+    /// * `result` - The result content from tool execution
     pub fn add_tool_result(&mut self, tool_call_id: &str, tool_name: &str, result: &str) {
         let message = OllamaChatMessage {
             role: "tool".to_string(),
@@ -344,6 +429,14 @@ impl ApplicationState {
         self.messages.push(message);
     }
 
+    /// Determines if the user should be prompted for input
+    ///
+    /// Returns true if:
+    /// - No messages exist yet
+    /// - No assistant response has been received
+    /// - Last message is not a tool result
+    ///
+    /// Returns false if last message is a tool result (should auto-send to assistant)
     pub fn should_prompt_user(&self) -> bool {
         // If the model hasn't been prompted yet, return true
         // Messages could be system->user->user (compact and rag might put documents/summaries as
@@ -371,6 +464,12 @@ impl ApplicationState {
         true
     }
 
+    /// Estimates the total token count for the current session
+    ///
+    /// Includes tokens from all messages and tool definitions
+    ///
+    /// # Returns
+    /// Estimated token count
     pub fn get_token_count_estimate(&self) -> usize {
         let messages_tokens = self
             .messages

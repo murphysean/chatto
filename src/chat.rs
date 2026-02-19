@@ -1,3 +1,24 @@
+//! Interactive chat mode implementation for chatto.
+//!
+//! This module implements the REPL (Read-Eval-Print Loop) for interactive
+//! chat sessions with Ollama models. It handles:
+//!
+//! - Command processing (quit, save, compact, etc.)
+//! - Tool call execution and approval workflow
+//! - Session management
+//! - Response streaming and display
+//!
+//! ## Chat Commands
+//!
+//! - `/quit`, `/exit`, `/done` - Exit the chat session
+//! - `/save <name>` - Save the session
+//! - `/edit`, `/editor` - Open editor for message composition
+//! - `/tools` - Extract tool calls from conversation
+//! - `/reset` - Clear message history (keep system message)
+//! - `/trim` - Trim message history to essentials
+//! - `/compact` - Summarize message history
+//! - `/send` - Force send without user message
+
 use std::{env, fs, io::Write, process::Command};
 
 use reqwest::Client;
@@ -17,6 +38,32 @@ use crate::{
     ApplicationConfig,
 };
 
+/// Starts an interactive chat session with an Ollama model
+///
+/// Implements a REPL (Read-Eval-Print Loop) for conversing with the model.
+/// Handles message history, tool execution, session management, and various
+/// slash commands for user interaction.
+///
+/// # Arguments
+/// * `client` - HTTP client for API requests
+/// * `app_config` - Application configuration (URL, model, etc.)
+/// * `session` - Optional session name to load/save
+///
+/// # Returns
+/// Result indicating success or failure
+///
+/// # Errors
+/// Returns error if API requests fail or critical errors occur
+///
+/// # Slash Commands
+/// - `/quit`, `/exit`, `/done` - Exit and optionally save session
+/// - `/save <name>` - Save session with name
+/// - `/edit`, `/editor` - Open external editor for message composition
+/// - `/tools` - Extract tool calls from last messages
+/// - `/reset` - Clear history (keep system message)
+/// - `/trim` - Trim to essential messages
+/// - `/compact` - Summarize history
+/// - `/send` - Force send without user message
 pub async fn chat_mode(
     client: &Client,
     app_config: ApplicationConfig,
@@ -289,6 +336,19 @@ By following these instructions, you will efficiently manage the codebase with p
 }
 
 /// Will take a vec of tool calls, prompt the user for approval and return a set of tool messages
+/// Processes tool calls by prompting user for approval and executing approved tools
+///
+/// Displays each tool call request to the user with relevant details and asks
+/// for approval. If approved, executes the tool and returns the result as a
+/// tool message. If rejected, returns the user's feedback as the tool result.
+///
+/// # Arguments
+/// * `rl` - Readline interface for user input
+/// * `app_config` - Application configuration for output limits
+/// * `tool_calls` - List of tool calls to process
+///
+/// # Returns
+/// Vector of tool result messages to add to conversation history
 fn process_tool_calls(
     rl: &mut DefaultEditor,
     app_config: &ApplicationConfig,
@@ -481,6 +541,13 @@ fn process_tool_calls(
     ret
 }
 
+/// Loads AGENT.md context file from current directory
+///
+/// Looks for an AGENT.md file in the current working directory and loads
+/// its contents to provide project-specific context to the AI assistant.
+///
+/// # Returns
+/// The contents of AGENT.md if found, None otherwise
 fn load_agent_context() -> Option<String> {
     let current_dir = env::current_dir().ok()?;
     let agent_file = current_dir.join("AGENT.md");
@@ -492,6 +559,20 @@ fn load_agent_context() -> Option<String> {
     }
 }
 
+/// Opens an editor for composing complex messages
+///
+/// Serializes the conversation history to YAML and opens it in the user's
+/// preferred editor (from $EDITOR env var, defaults to nvim). User can add
+/// a message after the '---' separator.
+///
+/// # Arguments
+/// * `messages` - Current conversation history
+///
+/// # Returns
+/// The message composed by the user in the editor
+///
+/// # Errors
+/// Returns error if editor fails to launch or no message is found
 fn open_editor(messages: &Vec<OllamaChatMessage>) -> Result<String, Box<dyn std::error::Error>> {
     let yaml_content = serde_yaml::to_string(messages)?;
 

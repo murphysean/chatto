@@ -1,20 +1,51 @@
+//! Tool implementations for chatto's agentic capabilities.
+//!
+//! This module provides the built-in tools that allow the AI assistant to
+//! interact with the system: executing shell commands, reading files, and
+//! writing files.
+//!
+//! ## Available Tools
+//!
+//! - **execute_shell**: Execute shell commands with output limiting
+//! - **read_file**: Read file contents with optional line range
+//! - **write_file**: Write content with multiple modes (overwrite, append, insert, replace)
+//!
+//! ## Output Limiting
+//!
+//! Tool output can be limited using the `OutputLimit` configuration to prevent
+//! overwhelming the context window with large outputs.
+
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, process::Command};
 use strum::{Display, EnumString};
 
+/// Configuration for limiting tool output size
+///
+/// Prevents overwhelming the context window with large command outputs
+/// by trimming based on size threshold and method.
 #[derive(Debug, Deserialize, Clone)]
 pub struct OutputLimit {
+    /// Maximum output size (in bytes or approximate lines). 0 means no limit.
     pub max_size: usize,
+    /// Method to use for trimming (head, tail, or bytes)
     pub method: TrimMethod,
 }
 
+/// Method for trimming oversized output
+///
+/// - **Head**: Keep the beginning of the output
+/// - **Tail**: Keep the end of the output
+/// - **Bytes**: Truncate at byte limit
 #[derive(Debug, Deserialize, Clone, Display, EnumString)]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum TrimMethod {
+    /// Keep the first N lines/bytes
     Head,
+    /// Keep the last N lines/bytes
     Tail,
+    /// Truncate at byte limit
     Bytes,
 }
 
@@ -37,6 +68,13 @@ impl From<OutputLimit> for config::Value {
     }
 }
 
+/// Creates the tool definition for execute_shell operations
+///
+/// Returns a JSON structure describing the execute_shell tool's interface,
+/// including parameters for command and reason.
+///
+/// # Returns
+/// JSON Value describing the tool for Ollama's function calling API
 pub fn create_shell_tool() -> Value {
     serde_json::json!({
         "type": "function",
@@ -61,6 +99,17 @@ pub fn create_shell_tool() -> Value {
     })
 }
 
+/// Executes a shell command and returns the output
+///
+/// Runs the command through the shell and captures stdout/stderr.
+/// Output can be trimmed based on the provided output limit configuration.
+///
+/// # Arguments
+/// * `command` - Shell command to execute
+/// * `output_limit` - Configuration for limiting output size
+///
+/// # Returns
+/// Command output (stdout on success, stderr on failure) or error message
 pub fn execute_command(command: &str, output_limit: &OutputLimit) -> String {
     println!("EXECUTING {}", command);
     let output = match Command::new("sh").arg("-c").arg(command).output() {
@@ -143,6 +192,13 @@ fn trim_output(output: &str, limit: &OutputLimit) -> String {
     }
 }
 
+/// Creates the tool definition for read_file operations
+///
+/// Returns a JSON structure describing the read_file tool's interface,
+/// including parameters for path and optional line range.
+///
+/// # Returns
+/// JSON Value describing the tool for Ollama's function calling API
 pub fn create_read_file_tool() -> Value {
     serde_json::json!({
         "type": "function",
@@ -171,6 +227,13 @@ pub fn create_read_file_tool() -> Value {
     })
 }
 
+/// Creates the tool definition for write_file operations
+///
+/// Returns a JSON structure describing the write_file tool's interface,
+/// including parameters for path, content, mode, and line ranges.
+///
+/// # Returns
+/// JSON Value describing the tool for Ollama's function calling API
 pub fn create_write_file_tool() -> Value {
     serde_json::json!({
         "type": "function",
@@ -208,6 +271,19 @@ pub fn create_write_file_tool() -> Value {
     })
 }
 
+/// Reads lines from a file with optional line range
+///
+/// Reads file contents and returns them with line numbers prefixed.
+/// Can read the entire file or a specific range of lines.
+///
+/// # Arguments
+/// * `path` - File path to read from
+/// * `start_line` - Starting line number (1-based, optional)
+/// * `end_line` - Ending line number (1-based, optional)
+///
+/// # Returns
+/// File contents with line numbers formatted as "  123: content"
+/// or an error message if the file cannot be read
 pub fn read_file_lines(path: &str, start_line: Option<usize>, end_line: Option<usize>) -> String {
     use std::fs;
 
@@ -244,6 +320,18 @@ pub fn read_file_lines(path: &str, start_line: Option<usize>, end_line: Option<u
     result
 }
 
+/// Displays a diff preview of proposed file changes
+///
+/// Shows a colored diff of what changes will be made to a file before
+/// the user approves the write operation. Displays removed lines in red
+/// and added lines in green, with context lines shown normally.
+///
+/// # Arguments
+/// * `path` - File path to show diff for
+/// * `content` - New content to write
+/// * `mode` - Write mode (overwrite, append, insert, replace)
+/// * `start_line` - Starting line for insert/replace operations
+/// * `end_line` - End line for replace operations
 pub fn show_write_diff(
     path: &str,
     content: &str,
@@ -322,6 +410,23 @@ pub fn show_write_diff(
     println!(" ⋮ ");
 }
 
+/// Writes content to a file with various modes
+///
+/// Supports four write modes:
+/// - **overwrite**: Replace entire file with new content
+/// - **append**: Add content to end of file
+/// - **insert**: Insert content at a specific line
+/// - **replace**: Replace a range of lines with new content
+///
+/// # Arguments
+/// * `path` - File path to write to
+/// * `content` - Content to write
+/// * `mode` - Write mode (overwrite, append, insert, replace)
+/// * `start_line` - Starting line for insert/replace operations (1-based)
+/// * `end_line` - End line for replace operations (1-based)
+///
+/// # Returns
+/// Success message or error description
 pub fn write_file_content(
     path: &str,
     content: &str,

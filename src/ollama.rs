@@ -1,3 +1,16 @@
+//! Ollama API client implementation.
+//!
+//! This module provides the core functionality for interacting with Ollama's
+//! chat API, including request/response structures, streaming support, and
+//! model information retrieval.
+//!
+//! ## Key Features
+//!
+//! - **Chat API**: Send messages and receive responses with streaming support
+//! - **Model Management**: List available models and query model capabilities
+//! - **Tool Calling**: Support for function/tool calling in chat sessions
+//! - **Streaming**: Real-time response streaming with state tracking
+
 use std::{collections::HashMap, error::Error};
 
 use futures::AsyncBufReadExt;
