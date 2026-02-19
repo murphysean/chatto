@@ -3,12 +3,12 @@ use std::{fs, io, path::Path};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::ollama::{post_ollama_chat, OllamaChatRequest, StreamingChatHandler};
 use crate::{
     ollama::{OllamaChatMessage, OllamaChatResponse, OllamaChatResponseStreamingState},
-    ApplicationConfig, ModelConfig,
+    ApplicationConfig,
 };
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -201,13 +201,9 @@ impl ApplicationState {
             model: self.model.clone(),
             messages,
             tools: None,
-            options: config.models.get(self.model.as_str()).as_ref().map(|c| {
-                if let Some(num_ctx) = c.num_ctx {
-                    json!({"num_ctx": num_ctx})
-                } else {
-                    Value::Null
-                }
-            }),
+            options: config
+                .get_model(self.model.as_str())
+                .and_then(|m| m.options.clone()),
             stream: false,
             think: false,
         };
@@ -268,13 +264,9 @@ impl ApplicationState {
             model: "functiongemma".to_string(),
             messages,
             tools: Some(self.tools.clone()),
-            options: config.models.get("functiongemma").as_ref().map(|m| {
-                if let Some(num_ctx) = m.num_ctx {
-                    json!({"num_ctx": num_ctx})
-                } else {
-                    Value::Null
-                }
-            }),
+            options: config
+                .get_model("functiongemma")
+                .and_then(|m| m.options.clone()),
             stream: false,
             think: false,
         };
@@ -297,13 +289,6 @@ impl ApplicationState {
             });
         }
         Ok(())
-    }
-
-    pub fn model_configuration(&self, app_config: &ApplicationConfig) -> ModelConfig {
-        match app_config.models.get(self.model.as_str()) {
-            Some(model_config) => model_config.clone().to_owned(),
-            None => ModelConfig::default(),
-        }
     }
 
     pub fn add_user_message(&mut self, content: &str) {

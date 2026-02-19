@@ -2,7 +2,6 @@ use std::{env, fs, io::Write, process::Command};
 
 use reqwest::Client;
 use rustyline::DefaultEditor;
-use serde_json::json;
 use tempfile::NamedTempFile;
 
 use crate::{
@@ -19,11 +18,10 @@ use crate::{
 };
 
 pub async fn chat_mode(
+    client: &Client,
     app_config: ApplicationConfig,
     mut session: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-
     let mut app_state = if let Some(ref session_name) = session {
         ApplicationState::load_session(session_name, &app_config)?
     } else {
@@ -78,12 +76,7 @@ pub async fn chat_mode(
 
 By following these instructions, you will efficiently manage the codebase with precise file operations and minimal context growth.
 "#;
-    let model_config = app_state.model_configuration(&app_config);
     let mut sys_content = DEFAULT_SYS_AGENT_PROMPT.to_string();
-
-    if let Some(system_prompt) = model_config.system_prompt {
-        sys_content = system_prompt;
-    }
 
     // Add AGENT.md context if available
     if let Some(agent_context) = load_agent_context() {
@@ -91,7 +84,11 @@ By following these instructions, you will efficiently manage the codebase with p
         sys_content += &agent_context;
     }
 
-    if model_config.tools {
+    if app_config
+        .get_model(&app_config.model)
+        .map(|m| m.capabilities.iter().any(|s| s == "tools"))
+        .is_some_and(core::convert::identity)
+    {
         sys_content += DEFAULT_SYS_TOOLS_PROMPT;
     }
 
@@ -124,12 +121,11 @@ By following these instructions, you will efficiently manage the codebase with p
             let mut tool_messages = process_tool_calls(&mut rl, &app_config, &temp_tool_calls);
             //If the model is not tool capable then turn these into user messages
             if !app_config
-                .models
-                .get(app_state.model.as_str())
-                .map(|m| m.tools)
-                .unwrap_or_default()
+                .get_model(&app_state.model)
+                .map(|m| m.capabilities.iter().any(|s| s == "tools"))
+                .is_some_and(core::convert::identity)
             {
-                println!("Modifying role for tools");
+                println!("Modifying role to user for tools (Model doesn't understand tools)");
                 tool_messages
                     .iter_mut()
                     .for_each(|m| m.role = "user".to_string());
@@ -140,11 +136,20 @@ By following these instructions, you will efficiently manage the codebase with p
 
         //Prompt user for a message
         if app_state.should_prompt_user() {
-            let max_context = app_config
-                .models
-                .get(app_state.model.as_str())
-                .map(|m| m.num_ctx.unwrap_or(4096))
+            //If I have num_ctx set, then that will be what to use
+            let mut max_context = app_config
+                .get_model(&app_state.model)
+                .and_then(|m| m.options.clone())
+                .and_then(|o| o.num_ctx)
                 .unwrap_or(4096);
+            //If not, ollama defaults to 4k, unless I am using a cloud model (url == ollama.com) or
+            //model ends with :cloud
+            if app_config.url.contains("ollama.com") {
+                max_context = app_config
+                    .get_model(&app_state.model)
+                    .and_then(|m| m.get_context_length())
+                    .unwrap_or(4096);
+            }
             println!(
                 "Waiting on your response... (Context {} tokens / Max {} tokens)",
                 app_state.get_token_count_estimate(),
@@ -191,7 +196,7 @@ By following these instructions, you will efficiently manage the codebase with p
             }
 
             if input == "/tools" {
-                app_state.get_tool_calls(&client, &app_config).await?;
+                app_state.get_tool_calls(client, &app_config).await?;
                 continue;
             }
 
@@ -206,7 +211,7 @@ By following these instructions, you will efficiently manage the codebase with p
             }
 
             if input == "/compact" {
-                app_state.compact(&client, &app_config).await?;
+                app_state.compact(client, &app_config).await?;
                 continue;
             }
 
@@ -229,17 +234,17 @@ By following these instructions, you will efficiently manage the codebase with p
         let mut request: OllamaChatRequest = app_state.clone().into();
         request.stream = app_config.stream;
         request.think = false;
-        if let Some(model_config) = app_config.models.get(app_state.model.as_str()) {
-            request.think = model_config.think;
-            if !model_config.tools {
-                request.tools = None;
-            }
-            if let Some(num_ctx) = model_config.num_ctx {
-                request.options = Some(json!({"num_ctx":num_ctx}));
-            }
+        if let Some(model_config) = app_config.get_model(&app_state.model) {
+            request.think = model_config.capabilities.iter().any(|c| c == "tools");
+            request.tools = model_config
+                .capabilities
+                .iter()
+                .any(|c| c == "tools")
+                .then_some(app_state.tools.clone());
+            request.options = model_config.options.clone();
         }
         match post_ollama_chat(
-            &client,
+            client,
             app_config.url.as_str(),
             app_config.api_key.as_str(),
             &request,
@@ -249,11 +254,15 @@ By following these instructions, you will efficiently manage the codebase with p
         {
             Ok((response, streaming_state)) => {
                 //Assume this is the last of the streaming messages, it's marked done
+                //Assume this is the last of the streaming messages, it's marked done
                 println!(
-                    "\nAssistant Finished... Prompt: {}, Eval: {}, Dur: {}",
+                    "\nAssistant Finished... Prompt: {}, Eval: {}, Total Dur: {:.2}s, Load Dur: {:.2}s, Prompt Eval Dur: {:.2}s, Eval Dur: {:.2}s",
                     response.prompt_eval_count.unwrap_or_default(),
                     response.eval_count.unwrap_or_default(),
-                    response.total_duration.unwrap_or_default()
+                    response.total_duration.unwrap_or_default() as f64 / 1_000_000_000.0,
+                    response.load_duration.unwrap_or_default() as f64 / 1_000_000_000.0,
+                    response.prompt_eval_duration.unwrap_or_default() as f64 / 1_000_000_000.0,
+                    response.eval_duration.unwrap_or_default() as f64 / 1_000_000_000.0
                 );
                 if matches!(streaming_state, OllamaChatResponseStreamingState::NoStream) {
                     app_state.print_assistant_response(&response);

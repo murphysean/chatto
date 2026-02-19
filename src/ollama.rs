@@ -1,19 +1,31 @@
-use std::error::Error;
+use std::{collections::HashMap, error::Error};
 
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct OllamaChatRequest {
     pub model: String,
     pub messages: Vec<OllamaChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<serde_json::Value>>,
-    pub options: Option<Value>,
+    pub options: Option<OllamaOptions>,
     pub stream: bool,
     pub think: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OllamaOptions {
+    pub seed: Option<u64>,
+    pub temperature: Option<f64>,
+    pub top_k: Option<u64>,
+    pub top_p: Option<f64>,
+    pub min_p: Option<f64>,
+    pub stop: Option<String>,
+    pub num_ctx: Option<u64>,
+    pub num_predict: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -261,4 +273,91 @@ pub async fn post_ollama_chat(
     }
 
     Err(format!("No final response, {}", 0).into())
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct OllamaModel {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub modified_at: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub digest: String,
+    pub details: Option<OllamaModelDetails>,
+    #[serde(default)]
+    pub model_info: HashMap<String, Value>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub options: Option<OllamaOptions>,
+}
+
+impl OllamaModel {
+    pub fn get_context_length(&self) -> Option<u64> {
+        for (k, v) in self.model_info.iter() {
+            if k.ends_with("context_length") && v.is_number() {
+                return v.as_u64();
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct OllamaModelDetails {
+    pub parent_model: String,
+    pub format: String,
+    pub family: String,
+    pub parameter_size: String,
+    //pub parameter_size: u64,
+    pub quantization_level: String,
+}
+
+pub async fn list_models(
+    client: &Client,
+    url: &str,
+    key: &str,
+) -> Result<Vec<OllamaModel>, Box<dyn Error>> {
+    let response = client
+        .get(format!("{}/api/tags", url))
+        .header("Authorization", format!("Bearer {}", key))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama at {}: {}", url, e))?;
+    #[derive(Debug, Deserialize, Clone)]
+    pub struct AnonWrapper {
+        pub models: Vec<OllamaModel>,
+    }
+    let body: AnonWrapper = response.json().await?;
+    Ok(body.models)
+}
+
+pub async fn show_model(
+    client: &Client,
+    url: &str,
+    key: &str,
+    model: &str,
+) -> Result<OllamaModel, Box<dyn Error>> {
+    let response = client
+        .post(format!("{}/api/show", url))
+        .header("Authorization", format!("Bearer {}", key))
+        .json(&json!({"model": model}))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama at {}: {}", url, e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!("API Error: Status: {}: {}", status, error_text).into());
+    }
+    let mut body: OllamaModel = response.json().await?;
+    body.name = model.to_string();
+    Ok(body)
 }

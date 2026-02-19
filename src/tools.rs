@@ -18,10 +18,11 @@ pub enum TrimMethod {
     Bytes,
 }
 
+/// Default impl for Output Limit, 0 means no limit
 impl Default for OutputLimit {
     fn default() -> Self {
         Self {
-            max_size: 2048,
+            max_size: 0,
             method: TrimMethod::Head,
         }
     }
@@ -92,6 +93,10 @@ pub fn execute_command(command: &str, output_limit: &OutputLimit) -> String {
 }
 
 fn trim_output(output: &str, limit: &OutputLimit) -> String {
+    //Trim is disabled
+    if limit.max_size == 0 {
+        return output.to_string();
+    }
     match limit.method {
         TrimMethod::Head => {
             let lines: Vec<&str> = output.lines().collect();

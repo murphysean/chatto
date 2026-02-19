@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand};
 use config::Config;
+use reqwest::Client;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::chat::chat_mode;
+use crate::ollama::{list_models, show_model, OllamaModel};
 use crate::tools::OutputLimit;
 
 pub mod app;
@@ -30,6 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    List,
     Chat {
         #[arg(short, long)]
         session: Option<String>,
@@ -43,15 +45,35 @@ pub struct ApplicationConfig {
     model: String,
     stream: bool,
     output_limit: OutputLimit,
-    models: HashMap<String, ModelConfig>,
+    models: Vec<OllamaModel>,
 }
 
-#[derive(Default, Debug, Deserialize, Clone)]
-pub struct ModelConfig {
-    system_prompt: Option<String>,
-    think: bool,
-    tools: bool,
-    num_ctx: Option<u64>,
+impl ApplicationConfig {
+    pub fn get_model(&self, model: &str) -> Option<&OllamaModel> {
+        self.models
+            .iter()
+            .find(|&m| m.name == model)
+            .map(|v| v as _)
+    }
+
+    pub fn merge_model(&mut self, model: OllamaModel) {
+        println!("MERGING {:?}", model);
+        let found = self.models.iter().any(|m| m.name == model.name);
+        if !found {
+            println!("PUSHED");
+            self.models.push(model);
+            return;
+        }
+        for m in self.models.iter_mut() {
+            if m.name == model.name {
+                println!("FOUND");
+
+                m.capabilities = model.capabilities;
+                m.model_info = model.model_info;
+                break;
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -66,10 +88,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //5. MCP/Tools Config
 
     //Check for config
-    let app_config: ApplicationConfig = Config::builder()
+    let config_builder = Config::builder()
         .set_default("url", "https://localhost:11434")?
         .set_default("model", "llama2")?
-        .set_default("streaming", "true")?
+        .set_default("stream", "true")?
         .set_default("output_limit", OutputLimit::default())?
         .add_source(config::File::with_name(".chatto.yaml").required(false))
         .add_source(
@@ -82,13 +104,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .set_override_option("url", cli.url)?
         .set_override_option("api_key", cli.key)?
-        .set_override_option("model", cli.model)?
-        .build()?
-        .try_deserialize()?;
+        .set_override_option("model", cli.model)?;
+
+    let client = Client::new();
+    let mut app_config: ApplicationConfig = config_builder.build()?.try_deserialize()?;
+    //Pull down the model config from the server
+    println!("Fetching Model Info...");
+    let model_info = show_model(
+        &client,
+        &app_config.url,
+        &app_config.api_key,
+        &app_config.model,
+    )
+    .await?;
+    println!("Model Info {:?}", &model_info);
+    app_config.merge_model(model_info);
 
     match cli.command {
+        Commands::List => {
+            let models = list_models(&client, &app_config.url, &app_config.api_key).await?;
+            println!("Available Models:");
+            for model in models {
+                let model_detail =
+                    show_model(&client, &app_config.url, &app_config.api_key, &model.name).await?;
+                println!(
+                    "- {} ctx: {:?}",
+                    model.name,
+                    model_detail.get_context_length()
+                );
+                for c in model_detail.capabilities {
+                    println!("  - {}", c);
+                }
+            }
+        }
         Commands::Chat { session } => {
-            chat_mode(app_config, session).await?;
+            chat_mode(&client, app_config, session).await?;
         }
     }
 
