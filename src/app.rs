@@ -33,6 +33,11 @@ pub struct ApplicationState {
     pub messages: Vec<OllamaChatMessage>,
 }
 
+/// Converts ApplicationState into an OllamaChatRequest for API submission.
+///
+/// Extracts the model, messages, and tools from the application state
+/// to form a complete request. Note: stream and think are set to false
+/// by default and should be overridden as needed.
 impl From<ApplicationState> for OllamaChatRequest {
     fn from(value: ApplicationState) -> Self {
         Self {
@@ -46,6 +51,10 @@ impl From<ApplicationState> for OllamaChatRequest {
     }
 }
 
+/// Handles streaming response chunks for real-time display.
+///
+/// Implements the StreamingChatHandler trait to print thinking (in gray),
+/// response content, and tool call indicators as they arrive during streaming.
 impl StreamingChatHandler for &mut ApplicationState {
     fn process_streaming_response(
         &mut self,

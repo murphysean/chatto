@@ -9,7 +9,7 @@
 - `src/tools.rs` - Contains functionality for some of the built in agentic tools like shell command, read/write files
 - `src/app.rs` - The application, stores app state and config. All methods for display and prompt are done here.
 - `src/chat.rs` - Implementation of the chat cli command.
-- Uses `.chatto.yaml` configuration file in user's home directory
+- Uses `.chatto.yaml` configuration file in user's project directory
 - Built with async/await pattern using tokio
 
 ## Key Dependencies
@@ -27,7 +27,7 @@
 - Prefer explicit error handling over unwrap()
 
 ## Configuration
-- Configuration stored in `.chatto.yaml` in home directory
+- Configuration stored in `.chatto.yaml` in project (or current) directory
 - Supports URL and model specification via CLI or config
 - Command structure: `chatto chat --url <URL> --model <MODEL>`
 

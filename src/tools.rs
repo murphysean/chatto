@@ -141,6 +141,18 @@ pub fn execute_command(command: &str, output_limit: &OutputLimit) -> String {
     result
 }
 
+/// Trims output to fit within the specified size limit.
+///
+/// Applies the configured trim method (head, tail, or bytes) to reduce
+/// large outputs and prevent context window overflow.
+///
+/// # Arguments
+/// * `output` - The output string to potentially trim
+/// * `limit` - Configuration specifying max size and trim method
+///
+/// # Returns
+/// The trimmed output with a truncation notice if applicable,
+/// or the original output if within limits
 fn trim_output(output: &str, limit: &OutputLimit) -> String {
     //Trim is disabled
     if limit.max_size == 0 {
@@ -218,7 +230,7 @@ pub fn create_read_file_tool() -> Value {
                     },
                     "end_line": {
                         "type": "integer",
-                        "description": "Ending line number (1-based, optional)"
+                        "description": "Ending line number (1-based, inclusive, optional)"
                     }
                 },
                 "required": ["path"]
@@ -262,7 +274,7 @@ pub fn create_write_file_tool() -> Value {
                     },
                     "end_line": {
                         "type": "integer",
-                        "description": "End line number for replace operations (1-based)"
+                        "description": "End line number for replace operations (1-based, inclusive)"
                     }
                 },
                 "required": ["path", "content"]
@@ -294,10 +306,9 @@ pub fn read_file_lines(path: &str, start_line: Option<usize>, end_line: Option<u
 
     let lines: Vec<&str> = content.lines().collect();
     let start = start_line.unwrap_or(1).saturating_sub(1); // Convert 1-based to 0-based
-    let end = end_line
-        .unwrap_or(lines.len())
-        .saturating_sub(1)
-        .min(lines.len()); // Convert 1-based to 0-based
+                                                           // end_line is inclusive (1-based), but Rust ranges are exclusive
+                                                           // So we don't subtract 1: end_line=5 means we want indices 0..5 (lines 1-5)
+    let end = end_line.unwrap_or(lines.len()).min(lines.len());
 
     if start >= lines.len() {
         return "Start line exceeds file length".to_string();
@@ -362,8 +373,30 @@ pub fn show_write_diff(
         }
         "insert" => {
             let insert_at = start_line.unwrap_or(1);
+            let insert_idx = insert_at.saturating_sub(1);
+
+            // Show context before (up to 3 lines)
+            let context_start = insert_idx.saturating_sub(3);
+            for i in context_start..insert_idx {
+                if i < existing_lines.len() {
+                    println!("  {:3}     : {}", i + 1, existing_lines[i]);
+                }
+            }
+
+            // Show inserted lines
             for line in content.lines() {
                 println!("\x1b[42m+ {:3}     : {}\x1b[0m", insert_at, line);
+            }
+
+            // Show context after (up to 3 lines, starting from where we're inserting)
+            let context_end = (insert_idx + 3).min(existing_lines.len());
+            for (i, _) in existing_lines
+                .iter()
+                .enumerate()
+                .take(context_end)
+                .skip(insert_idx)
+            {
+                println!("  {:3}     : {}", i + 1, existing_lines[i]);
             }
         }
         "replace" => {
@@ -474,10 +507,9 @@ pub fn write_file_content(
             };
             let mut lines: Vec<&str> = existing.lines().collect();
             let start = start_line.unwrap_or(1).saturating_sub(1); // Convert 1-based to 0-based
-            let end = end_line
-                .unwrap_or(lines.len())
-                .saturating_sub(1)
-                .min(lines.len()); // Convert 1-based to 0-based
+                                                                   // end_line is inclusive (1-based), but Rust ranges are exclusive
+                                                                   // So we don't subtract 1: end_line=5 means we want indices 0..5 (lines 1-5)
+            let end = end_line.unwrap_or(lines.len()).min(lines.len());
 
             if start < lines.len() {
                 lines.splice(start..end, content.lines());

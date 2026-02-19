@@ -36,29 +36,47 @@ pub struct OllamaChatRequest {
     pub think: bool,
 }
 
+/// Model generation options for Ollama requests.
+///
+/// Controls various aspects of text generation including randomness,
+/// token limits, and stopping conditions.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OllamaOptions {
+    /// Random seed for reproducible outputs
     pub seed: Option<u64>,
+    /// Temperature for sampling (higher = more random)
     pub temperature: Option<f64>,
+    /// Top-k sampling parameter
     pub top_k: Option<u64>,
+    /// Top-p (nucleus) sampling parameter
     pub top_p: Option<f64>,
+    /// Minimum probability threshold for sampling
     pub min_p: Option<f64>,
+    /// Stop sequence that halts generation
     pub stop: Option<String>,
+    /// Maximum context window size in tokens
     pub num_ctx: Option<u64>,
+    /// Maximum number of tokens to predict
     pub num_predict: Option<u64>,
 }
 
+/// A single message in an Ollama chat conversation.
+///
+/// Represents messages from different roles (user, assistant, system, tool)
+/// with support for tool calling functionality.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct OllamaChatMessage {
+    /// The role of this message sender (user, assistant, system, or tool)
     pub role: String,
+    /// The text content of the message
     pub content: String,
-    /// The agent fills this when it is requesting tool use
+    /// Tool calls requested by the assistant (when role is assistant)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// Used for role = tool
+    /// Name of the tool that was executed (when role is tool)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
-    /// Used for role = tool
+    /// ID of the tool call this responds to (when role is tool)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
@@ -99,11 +117,19 @@ impl OllamaChatMessage {
     }
 }
 
+/// The message portion of an Ollama chat response.
+///
+/// Contains the assistant's reply including any thinking process
+/// and tool calls.
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct OllamaChatResponseMessage {
+    /// Always "assistant" for responses
     pub role: String,
+    /// The main response content
     pub content: String,
+    /// Internal reasoning/thinking (for models that support it)
     pub thinking: Option<String>,
+    /// Tool calls requested by the assistant
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
@@ -205,31 +231,78 @@ impl OllamaChatResponse {
     }
 }
 
+/// A tool call request from the assistant.
+///
+/// Represents a single function call that the assistant wants to execute,
+/// including an ID for tracking and the function details.
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct ToolCall {
+    /// Unique identifier for this tool call (used in tool result messages)
     #[serde(default)]
     pub id: Option<String>,
+    /// The function to call with its arguments
     pub function: ToolCallFunction,
 }
 
+/// Details of a tool function call.
+///
+/// Specifies which tool to call and with what arguments.
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct ToolCallFunction {
+    /// Name of the tool function to call
     pub name: String,
+    /// Optional description of why this tool is being called
     pub description: Option<String>,
+    /// JSON object containing the function arguments
     pub arguments: Value,
 }
 
+/// States during streaming response processing.
+///
+/// Tracks the current phase of a streaming chat response, used to
+/// provide user feedback and control message formatting.
 #[derive(Debug, Clone, Copy)]
 pub enum OllamaChatResponseStreamingState {
+    /// Non-streaming response (single response)
     NoStream,
+    /// Currently receiving data but no content yet
     Receiving,
+    /// Model is outputting thinking/reasoning
     Thinking,
+    /// Model is outputting response content
     Responding,
+    /// Model is requesting tool execution
     CallingTools,
+    /// Stream has completed
     Done,
 }
 
+/// Trait for handling streaming chat response chunks.
+///
+/// Implement this trait to process streaming responses in real-time,
+/// such as displaying content to the user as it arrives.
+///
+/// # Example
+/// ```ignore
+/// struct MyHandler;
+/// impl StreamingChatHandler for MyHandler {
+///     fn process_streaming_response(&mut self, prev: &OllamaChatResponseStreamingState, curr: &OllamaChatResponseStreamingState, resp: &OllamaChatResponse) {
+///         if let Some(msg) = &resp.message {
+///             print!("{}", msg.content);
+///         }
+///     }
+/// }
+/// ```
 pub trait StreamingChatHandler {
+    /// Process a streaming response chunk.
+    ///
+    /// Called for each chunk received during streaming, providing both
+    /// the previous and current streaming states for transition handling.
+    ///
+    /// # Arguments
+    /// * `previous_streaming_state` - State before this chunk
+    /// * `current_streaming_state` - State after processing this chunk
+    /// * `ollama_response` - The response chunk to process
     fn process_streaming_response(
         &mut self,
         previous_streaming_state: &OllamaChatResponseStreamingState,
