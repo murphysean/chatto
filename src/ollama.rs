@@ -51,6 +51,13 @@ pub struct OllamaChatMessage {
 }
 
 impl OllamaChatMessage {
+    /// Estimates the token count for this message based on its content and tool calls.
+    ///
+    /// Uses a heuristic approach combining byte and word counting to estimate tokens.
+    /// For tool calls, estimates based on JSON serialization length.
+    ///
+    /// Returns:
+    ///     Estimated token count as usize
     pub fn get_token_count_estimate(&self) -> usize {
         let bytes = self.content.len() as f64;
         let words = self.content.split_whitespace().count() as f64;
@@ -109,6 +116,17 @@ pub struct OllamaChatResponse {
 }
 
 impl OllamaChatResponse {
+    /// Merges an incoming streaming response chunk into this response.
+    ///
+    /// Accumulates content, thinking, and tool calls from streaming chunks
+    /// into a single coherent response. Tracks the streaming state as chunks
+    /// are merged.
+    ///
+    /// # Arguments
+    /// * `incoming` - The new response chunk to merge into this response
+    ///
+    /// # Returns
+    /// The current streaming state after merging (e.g., Thinking, Responding, CallingTools, Done)
     fn merge(&mut self, incoming: &OllamaChatResponse) -> OllamaChatResponseStreamingState {
         let mut ret: Option<OllamaChatResponseStreamingState> = None;
         self.model = incoming.model.clone();
@@ -207,6 +225,28 @@ pub trait StreamingChatHandler {
     );
 }
 
+/// Sends a chat request to the Ollama API and handles the response.
+///
+/// Supports both streaming and non-streaming responses. For streaming responses,
+/// optionally calls a handler for each chunk received.
+///
+/// # Arguments
+/// * `client` - The HTTP client to use for the request
+/// * `url` - The base URL of the Ollama API
+/// * `key` - The API key for authentication
+/// * `request` - The chat request to send
+/// * `streaming_chat_handler` - Optional handler for processing streaming response chunks
+///
+/// # Returns
+/// A tuple containing the complete response and the final streaming state,
+/// or an error if the request fails.
+///
+/// # Errors
+/// Returns an error if:
+/// - Connection to Ollama fails
+/// - The API returns a non-success status code
+/// - JSON parsing fails
+/// - The stream ends without a final response
 pub async fn post_ollama_chat(
     client: &Client,
     url: &str,
@@ -303,6 +343,13 @@ pub struct OllamaModel {
 }
 
 impl OllamaModel {
+    /// Retrieves the context length for this model from its metadata.
+    ///
+    /// Searches the model info for a key ending with "context_length"
+    /// and returns its numeric value if found.
+    ///
+    /// # Returns
+    /// The context length as u64 if found, or None if not available
     pub fn get_context_length(&self) -> Option<u64> {
         for (k, v) in self.model_info.iter() {
             if k.ends_with("context_length") && v.is_number() {
@@ -323,6 +370,22 @@ pub struct OllamaModelDetails {
     pub quantization_level: String,
 }
 
+/// Lists all available models from the Ollama instance.
+///
+/// Retrieves a list of models available on the Ollama server, including
+/// their metadata such as size, modification time, and capabilities.
+///
+/// # Arguments
+/// * `client` - The HTTP client to use for the request
+/// * `url` - The base URL of the Ollama API
+/// * `key` - The API key for authentication
+///
+/// # Returns
+/// A vector of OllamaModel objects representing available models,
+/// or an error if the request fails.
+///
+/// # Errors
+/// Returns an error if the connection fails or the response cannot be parsed.
 pub async fn list_models(
     client: &Client,
     url: &str,
@@ -342,6 +405,25 @@ pub async fn list_models(
     Ok(body.models)
 }
 
+/// Retrieves detailed information about a specific model.
+///
+/// Fetches model metadata including configuration, parameters, and capabilities
+/// for the specified model name.
+///
+/// # Arguments
+/// * `client` - The HTTP client to use for the request
+/// * `url` - The base URL of the Ollama API
+/// * `key` - The API key for authentication
+/// * `model` - The name of the model to retrieve information for
+///
+/// # Returns
+/// An OllamaModel with detailed information, or an error if the request fails.
+///
+/// # Errors
+/// Returns an error if:
+/// - Connection to Ollama fails
+/// - The model does not exist
+/// - The API returns a non-success status code
 pub async fn show_model(
     client: &Client,
     url: &str,
